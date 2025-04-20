@@ -1,0 +1,6 @@
+[tools]
+node = "22.14.0"
+op = "2.30.3"
+
+[env]
+PSST_CONFIG = "~/.config/psst"
