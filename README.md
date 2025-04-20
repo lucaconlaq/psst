@@ -6,9 +6,29 @@ A secret management tool that helps you manage and inject secrets into your envi
 
 ## Installation
 
+You can install psst in several ways:
+
+### Using npm (global installation)
+
 ```bash
-npm install -g psst
+npm install -g @lucaconlaq/psst
 ```
+
+### Using npx (no installation required)
+
+```bash
+npx @lucaconlaq/psst
+```
+
+### Using mise (recommended)
+
+[mise](https://mise.jdx.dev) is a modern version manager that makes it easy to manage multiple versions of tools. To install psst with mise:
+
+```bash
+mise use npm:@lucaconlaq/psst
+```
+
+This is the recommended way to install psst as it provides better version management and isolation.
 
 ## Usage
 
