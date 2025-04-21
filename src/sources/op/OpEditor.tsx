@@ -158,7 +158,7 @@ export const OpEditor = ({ secret, name, onComplete }: OpEditorProps) => {
     }
   });
 
-  const renderList = (items: any[], selectedIndex: number) => {
+  const renderList = (items: any[], selectedIndex: number, emoji: string) => {
     const startIndex = Math.max(0, selectedIndex - MAX_VISIBLE_ITEMS + 1);
     const endIndex = Math.min(items.length, startIndex + MAX_VISIBLE_ITEMS);
     const visibleRange = items.slice(startIndex, endIndex);
@@ -178,6 +178,7 @@ export const OpEditor = ({ secret, name, onComplete }: OpEditorProps) => {
                 startIndex + index === selectedIndex ? "yellow" : undefined
               }
             >
+              {emoji}{" "}
               {state === "fields" ? (
                 <>
                   <Text>{displayText}</Text>
@@ -225,9 +226,10 @@ export const OpEditor = ({ secret, name, onComplete }: OpEditorProps) => {
         <Text>Loading...</Text>
       ) : (
         <>
-          {state === "vaults" && renderList(vaults, selectedIndex)}
-          {state === "items" && renderList(filteredItems, selectedIndex)}
-          {state === "fields" && renderList(filteredFields, selectedIndex)}
+          {state === "vaults" && renderList(vaults, selectedIndex, "🏰")}
+          {state === "items" && renderList(filteredItems, selectedIndex, "📄")}
+          {state === "fields" &&
+            renderList(filteredFields, selectedIndex, "🔑")}
         </>
       )}
     </Box>
