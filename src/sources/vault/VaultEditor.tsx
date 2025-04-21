@@ -2,6 +2,7 @@ import { Box, Text, useInput } from "ink";
 import { useState, useEffect } from "react";
 import { execSync } from "child_process";
 import { vaultSource } from "./vault.js";
+import { VaultPathEditor } from "./VaultPathEditor.js";
 
 interface VaultEditorProps {
   onComplete: (value: string) => void;
@@ -22,6 +23,7 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [filteredMounts, setFilteredMounts] = useState<Mount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedMount, setSelectedMount] = useState<string | null>(null);
   const executable = vaultSource.executable;
 
   useEffect(() => {
@@ -61,7 +63,13 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
 
   useInput((input, key) => {
     if (key.leftArrow) {
-      onComplete("");
+      if (selectedMount) {
+        setSelectedMount(null);
+      } else {
+        onComplete("");
+      }
+    } else if (key.rightArrow && filteredMounts[selectedIndex]) {
+      setSelectedMount(filteredMounts[selectedIndex].path);
     } else if (key.upArrow) {
       setSelectedIndex((prev) => Math.max(0, prev - 1));
     } else if (key.downArrow) {
@@ -85,7 +93,7 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
             key={mount.path}
             color={startIndex + index === selectedIndex ? "yellow" : undefined}
           >
-            {mount.path}
+            💾 {mount.path}
           </Text>
         ))}
         {items.length > MAX_VISIBLE_ITEMS && (
@@ -98,6 +106,15 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
       </Box>
     );
   };
+
+  if (selectedMount) {
+    return (
+      <VaultPathEditor
+        mountPath={selectedMount}
+        onBack={() => setSelectedMount(null)}
+      />
+    );
+  }
 
   return (
     <Box flexDirection="column">
