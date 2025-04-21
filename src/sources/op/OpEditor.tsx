@@ -208,14 +208,6 @@ export const OpEditor = ({ secret, name, onComplete }: OpEditorProps) => {
         </Box>
       )}
       <Box marginBottom={1}>
-        <Text>
-          Press <Text color="yellow">←</Text> to go back,{" "}
-          <Text color="yellow">→</Text> to select,{" "}
-          <Text color="yellow">↑↓</Text> to navigate,{" "}
-          <Text color="yellow">type</Text> to search
-        </Text>
-      </Box>
-      <Box marginBottom={1}>
         <Text bold>
           {state === "vaults" && "Select a vault:"}
           {state === "items" && `Items in ${currentVault?.name}:`}

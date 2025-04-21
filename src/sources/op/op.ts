@@ -55,6 +55,11 @@ export const opSource: OpSource = {
 
     return { type: SecretFetchResultType.Success, value };
   },
-  editorOptions: [{ key: "←", description: "Go back" }],
+  editorOptions: [
+    { key: "←", description: "go back" },
+    { key: "→", description: "select" },
+    { key: "↑↓", description: "navigate" },
+    { key: "type", description: "search" },
+  ],
   renderEditor: OpEditor,
 };
