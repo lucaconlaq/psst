@@ -11,8 +11,19 @@ import Help from "./Console/Help.js";
 import { injectSecrets } from "./injection.js";
 import { runCommand } from "./runCommand.js";
 import { vaultSource } from "./sources/vault/vault.js";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 export const setupCommand = () => {
   const program = new Command();
+
+  const packageJson = JSON.parse(
+    readFileSync(join(__dirname, "../package.json"), "utf8")
+  );
+  const version = packageJson.version;
 
   program
     .name("psst")
@@ -22,6 +33,7 @@ export const setupCommand = () => {
     .passThroughOptions()
     .helpOption(false)
     .addHelpCommand(false)
+    .version(version)
     .action(async (command: string[]) => {
       const sources = [opSource, shellSource, manualSource];
       if (process.env.PSST_VAULT_ENABLED) {
