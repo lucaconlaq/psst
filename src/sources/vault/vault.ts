@@ -3,6 +3,7 @@ import { execSync } from "child_process";
 import { VaultEditor } from "./VaultEditor.js";
 import { SecretConfig, SecretSource } from "../../types.js";
 import { resourceUsage } from "process";
+import { fetchSecretFromPath } from "./vaultFetchData.js";
 
 export interface VaultSource extends SecretSource {
   executable: string;
@@ -21,10 +22,18 @@ export const vaultSource: VaultSource = {
     secret: SecretConfig,
     key: string
   ): Promise<SecretFetchResult> {
-    return {
-      type: SecretFetchResultType.Success,
-      value: "test",
-    };
+    try {
+      const value = await fetchSecretFromPath(secret.value);
+      return {
+        type: SecretFetchResultType.Success,
+        value,
+      };
+    } catch (error) {
+      return {
+        type: SecretFetchResultType.Warning,
+        warning: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
   },
   editorOptions: [
     { key: "←", description: "Go back" },

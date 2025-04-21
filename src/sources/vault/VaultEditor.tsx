@@ -1,61 +1,49 @@
 import { Box, Text, useInput } from "ink";
 import { useState, useEffect } from "react";
-import { execSync } from "child_process";
 import { vaultSource } from "./vault.js";
 import { VaultPathEditor } from "./VaultPathEditor.js";
+import { fetchKVMounts } from "./vaultFetchData.js";
 
 interface VaultEditorProps {
   onComplete: (value: string) => void;
 }
 
-interface Mount {
-  path: string;
-  type: string;
-  description: string;
-}
-
 const MAX_VISIBLE_ITEMS = 5;
 
 export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
-  const [mounts, setMounts] = useState<Mount[]>([]);
+  const [mounts, setMounts] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [filteredMounts, setFilteredMounts] = useState<Mount[]>([]);
+  const [filteredMounts, setFilteredMounts] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [selectedMount, setSelectedMount] = useState<string | null>(null);
+  const [currentPath, setCurrentPath] = useState<string | null>(null);
   const executable = vaultSource.executable;
 
   useEffect(() => {
-    try {
+    const loadMounts = async () => {
       setIsLoading(true);
-      const mountsJson = execSync(
-        `${executable} read -format=json sys/internal/ui/mounts`,
-        {
-          encoding: "utf8",
-        }
-      );
-      const mountsData = JSON.parse(mountsJson).data.secret as Record<
-        string,
-        Mount
-      >;
-      const kvMounts = Object.entries(mountsData)
-        .filter(([_, mount]) => mount.type === "kv")
-        .map(([path, mount]) => ({ ...mount, path }));
-      setMounts(kvMounts);
-      setFilteredMounts(kvMounts);
-    } catch (err) {
-      setError(
-        "Failed to fetch KV mounts. Please ensure you're authenticated with Vault by running 'vault token lookup'."
-      );
-    } finally {
+      const kvMounts = await fetchKVMounts(executable);
+      if (!kvMounts) {
+        setError(
+          "Failed to fetch KV mounts. Please ensure you're authenticated with Vault by running 'vault token lookup'."
+        );
+        setMounts([]);
+        setFilteredMounts([]);
+      } else {
+        setMounts(kvMounts);
+        setFilteredMounts(kvMounts);
+        setError(null);
+      }
       setIsLoading(false);
-    }
-  }, []);
+    };
+
+    loadMounts();
+  }, [executable]);
 
   useEffect(() => {
     const filtered = mounts.filter((mount) =>
-      mount.path.toLowerCase().includes(searchQuery.toLowerCase())
+      mount.toLowerCase().includes(searchQuery.toLowerCase())
     );
     setFilteredMounts(filtered);
     setSelectedIndex(0);
@@ -63,13 +51,13 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
 
   useInput((input, key) => {
     if (key.leftArrow) {
-      if (selectedMount) {
-        setSelectedMount(null);
+      if (currentPath) {
+        setCurrentPath(null);
       } else {
         onComplete("");
       }
     } else if (key.rightArrow && filteredMounts[selectedIndex]) {
-      setSelectedMount(filteredMounts[selectedIndex].path);
+      setCurrentPath(filteredMounts[selectedIndex]);
     } else if (key.upArrow) {
       setSelectedIndex((prev) => Math.max(0, prev - 1));
     } else if (key.downArrow) {
@@ -81,7 +69,7 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
     }
   });
 
-  const renderList = (items: Mount[], selectedIndex: number) => {
+  const renderList = (items: string[], selectedIndex: number) => {
     const startIndex = Math.max(0, selectedIndex - MAX_VISIBLE_ITEMS + 1);
     const endIndex = Math.min(items.length, startIndex + MAX_VISIBLE_ITEMS);
     const visibleRange = items.slice(startIndex, endIndex);
@@ -90,10 +78,10 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
       <Box flexDirection="column">
         {visibleRange.map((mount, index) => (
           <Text
-            key={mount.path}
+            key={mount}
             color={startIndex + index === selectedIndex ? "yellow" : undefined}
           >
-            💾 {mount.path}
+            💾 {mount}
           </Text>
         ))}
         {items.length > MAX_VISIBLE_ITEMS && (
@@ -107,11 +95,13 @@ export const VaultEditor = ({ onComplete }: VaultEditorProps) => {
     );
   };
 
-  if (selectedMount) {
+  if (currentPath) {
     return (
       <VaultPathEditor
-        mountPath={selectedMount}
-        onBack={() => setSelectedMount(null)}
+        mountPath={currentPath}
+        onBack={() => setCurrentPath(null)}
+        onNavigate={(path) => setCurrentPath(path)}
+        onComplete={onComplete}
       />
     );
   }
