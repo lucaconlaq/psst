@@ -11,9 +11,10 @@
     "jsxImportSource": "react",
     "outDir": "dist",
     "rootDir": "src",
-    "noEmit": true
+    
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules"],
+  "output": "dist"
 }
 
