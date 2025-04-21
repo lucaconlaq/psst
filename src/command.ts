@@ -35,10 +35,8 @@ export const setupCommand = () => {
     .addHelpCommand(false)
     .version(version)
     .action(async (command: string[]) => {
-      const sources = [opSource, shellSource, manualSource];
-      if (process.env.PSST_VAULT_ENABLED) {
-        sources.push(vaultSource);
-      }
+      const sources = [opSource, shellSource, manualSource, vaultSource];
+
       const env: NodeJS.ProcessEnv = { ...process.env };
       const configFile = process.env.PSST_CONFIG || ".psst.json";
       let config: SecretsConfig = {};

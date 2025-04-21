@@ -1,6 +1,6 @@
 # psst 🤫
 
-A secret management tool that helps you manage and inject secrets into your environment.
+A secret management tool that helps you manage and inject secrets into your environment. Supports [1Password CLI](https://developer.1password.com/docs/cli/), [Vault](https://developer.hashicorp.com/vault) and shell commands.
 
 ![Project Demo](.github/demo.gif)
 
