@@ -26,6 +26,11 @@ export const vaultSource: VaultSource = {
       value: "test",
     };
   },
-  editorOptions: [{ key: "←", description: "Go back" }],
+  editorOptions: [
+    { key: "←", description: "Go back" },
+    { key: "→", description: "Select" },
+    { key: "↑↓", description: "Navigate" },
+    { key: "type", description: "Search" },
+  ],
   renderEditor: VaultEditor,
 };
