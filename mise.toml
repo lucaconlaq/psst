@@ -4,5 +4,4 @@ op = "2.30.3"
 vault = "1.19.1"
 
 [env]
-PSST_CONFIG = "~/.config/psst"
 PSST_VAULT_ENABLED = "true"
