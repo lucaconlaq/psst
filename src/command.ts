@@ -10,7 +10,7 @@ import React from "react";
 import Help from "./Console/Help.js";
 import { injectSecrets } from "./injection.js";
 import { runCommand } from "./runCommand.js";
-
+import { vaultSource } from "./sources/vault/vault.js";
 export const setupCommand = () => {
   const program = new Command();
 
@@ -24,6 +24,9 @@ export const setupCommand = () => {
     .addHelpCommand(false)
     .action(async (command: string[]) => {
       const sources = [opSource, shellSource, manualSource];
+      if (process.env.PSST_VAULT_ENABLED) {
+        sources.push(vaultSource);
+      }
       const env: NodeJS.ProcessEnv = { ...process.env };
       const configFile = process.env.PSST_CONFIG || ".psst.json";
       let config: SecretsConfig = {};
