@@ -5,7 +5,8 @@ import Editor from "./Editor.js";
 import Help from "./Help.js";
 import MainView from "./MainView.js";
 import { SecretSource } from "../types.js";
-import { writeFileSync } from "fs";
+import { writeFileSync, existsSync, mkdirSync } from "fs";
+import { dirname } from "path";
 
 interface ConsoleProps {
   config: SecretsConfig;
@@ -20,6 +21,10 @@ const Console = ({ config, configFile, sources }: ConsoleProps) => {
   const [currentConfig, setCurrentConfig] = useState<SecretsConfig>(config);
 
   const saveConfig = (config: SecretsConfig): void => {
+    const configDir = dirname(configFile);
+    if (!existsSync(configDir)) {
+      mkdirSync(configDir, { recursive: true });
+    }
     writeFileSync(configFile, JSON.stringify(config, null, 2));
   };
 
