@@ -27,7 +27,6 @@ const findConfig = (): string => {
     }
 
     // Move up one directory
-    console.log("Moving up one directory", currentDir);
     currentDir = resolve(currentDir, "..");
   }
 
