@@ -13,7 +13,7 @@ import { runCommand } from "./runCommand.js";
 import { vaultSource } from "./sources/vault/vault.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-
+import { findConfig, loadConfig } from "./config.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -38,11 +38,8 @@ export const setupCommand = () => {
       const sources = [opSource, shellSource, manualSource, vaultSource];
 
       const env: NodeJS.ProcessEnv = { ...process.env };
-      const configFile = process.env.PSST_CONFIG || ".psst.json";
-      let config: SecretsConfig = {};
-      if (existsSync(configFile)) {
-        config = JSON.parse(readFileSync(configFile, "utf8"));
-      }
+      const configFile = findConfig();
+      const config = await loadConfig();
 
       const [cmd, ...args] = command;
 

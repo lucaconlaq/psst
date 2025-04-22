@@ -66,29 +66,25 @@ psst sh -c 'echo $A_SECRET'
 
 ## Configuration
 
-### 1. Interactive Console
+psst looks for a config file in this order:
 
-The easiest way to manage your secrets is through the interactive console. Just run `psst` and use the intuitive interface to add, edit, and delete secrets.
+1. Use `PSST_CONFIG` if it is set.
+2. Look for `psst.json` or `.psst.json` in the following locations:
+   - Current directory
+   - Parent directories (up to and including the home directory)
+3. If no configuration file is found, use `.psst.json` in the current directory.
 
-### 2. Configuration File
+If the file does not exist, it will be created when the first secret is added via the console.
 
-psst automatically creates and uses `.psst.json` in your project root. You can edit it directly:
+Example config:
 
 ```json
 {
-  "SECRET_NAME": {
+  "API_KEY": {
     "source": "op",
     "value": "op://vault/item/field"
   }
 }
-```
-
-### 3. Custom Config Location
-
-Override the default config file location using the `PSST_CONFIG` environment variable:
-
-```bash
-PSST_CONFIG=./secrets.json psst
 ```
 
 ## License
