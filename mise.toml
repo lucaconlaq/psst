@@ -2,3 +2,6 @@
 node = "22.14.0"
 op = "2.30.3"
 vault = "1.19.1"
+
+[env]
+PSST_EXPERIMENTAL = "true"

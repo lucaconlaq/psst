@@ -14,6 +14,7 @@ import { vaultSource } from "./sources/vault/vault.js";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { findConfig, loadConfig } from "./config.js";
+import { terraformSource } from "./sources/terraform/terraform.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -36,6 +37,10 @@ export const setupCommand = () => {
     .version(version)
     .action(async (command: string[]) => {
       const sources = [opSource, shellSource, manualSource, vaultSource];
+
+      if (process.env.PSST_EXPERIMENTAL) {
+        sources.push(terraformSource);
+      }
 
       const env: NodeJS.ProcessEnv = { ...process.env };
       const configFile = findConfig();
