@@ -5,6 +5,7 @@ interface ValueEditorProps {
   secret: SecretConfig;
   name: string;
   source: SecretSource;
+  configPath: string;
   onComplete: (value: string) => void;
 }
 
@@ -12,6 +13,7 @@ const ValueEditor = ({
   secret,
   name,
   source,
+  configPath,
   onComplete,
 }: ValueEditorProps) => {
   return (
@@ -19,6 +21,7 @@ const ValueEditor = ({
       {source.renderEditor({
         secret,
         name,
+        configPath,
         onComplete,
       })}
     </Box>

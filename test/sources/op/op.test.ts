@@ -30,7 +30,7 @@ describe("opSource", () => {
         source: "op",
       };
       const testSource = { ...opSource, executable: "echo" };
-      const result = await testSource.fetchSecret(secret, "test-key");
+      const result = await testSource.fetchSecret(secret, "test-key", ".");
       expect(result.type).toBe(SecretFetchResultType.Success);
       if (result.type === SecretFetchResultType.Success) {
         expect(result.value).toBe("read op://vault/item/field");
@@ -43,7 +43,7 @@ describe("opSource", () => {
         source: "op",
       };
       const testSource = { ...opSource, executable: "invalid-command" };
-      const result = await testSource.fetchSecret(secret, "test-key");
+      const result = await testSource.fetchSecret(secret, "test-key", ".");
       expect(result.type).toBe(SecretFetchResultType.Warning);
       if (result.type === SecretFetchResultType.Warning) {
         expect(result.warning).toBe("1Password CLI is not installed");
@@ -56,7 +56,7 @@ describe("opSource", () => {
         source: "op",
       };
       const testSource = { ...opSource, executable: "echo" };
-      const result = await testSource.fetchSecret(secret, "test-key");
+      const result = await testSource.fetchSecret(secret, "test-key", ".");
       expect(result.type).toBe(SecretFetchResultType.Warning);
       if (result.type === SecretFetchResultType.Warning) {
         expect(result.warning).toBe(

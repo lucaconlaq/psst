@@ -18,7 +18,8 @@ export const terraformSource: TerraformSource = {
   readCommand: "output",
   fetchSecret: async function (
     secret: SecretConfig,
-    key: string
+    key: string,
+    configPath: string
   ): Promise<SecretFetchResult> {
     try {
       execSync(`${this.executable} ${this.versionCommand}`, {

@@ -7,6 +7,7 @@ import { opSource } from "./op.js";
 interface OpEditorProps {
   secret: SecretConfig;
   name: string;
+  configPath: string;
   onComplete: (value: string) => void;
 }
 
@@ -37,7 +38,12 @@ type State = "vaults" | "items" | "fields";
 
 const MAX_VISIBLE_ITEMS = 5;
 
-export const OpEditor = ({ secret, name, onComplete }: OpEditorProps) => {
+export const OpEditor = ({
+  secret,
+  name,
+  configPath,
+  onComplete,
+}: OpEditorProps) => {
   const [state, setState] = useState<State>("vaults");
   const [vaults, setVaults] = useState<Vault[]>([]);
   const [items, setItems] = useState<Item[]>([]);

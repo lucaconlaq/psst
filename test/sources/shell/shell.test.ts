@@ -23,7 +23,7 @@ describe("shellSource", () => {
   describe("fetchSecret", () => {
     it("should execute echo command and return 1", async () => {
       const secret: SecretConfig = { value: "echo 1", source: "shell" };
-      const result = await shellSource.fetchSecret(secret, "test-key");
+      const result = await shellSource.fetchSecret(secret, "test-key", ".");
       expect(result.type).toBe(SecretFetchResultType.Success);
       if (result.type === SecretFetchResultType.Success) {
         expect(result.value).toBe("1");
@@ -35,7 +35,7 @@ describe("shellSource", () => {
         value: "invalid-command-that-does-not-exist",
         source: "shell",
       };
-      const result = await shellSource.fetchSecret(secret, "test-key");
+      const result = await shellSource.fetchSecret(secret, "test-key", ".");
       expect(result.type).toBe(SecretFetchResultType.Warning);
       if (result.type === SecretFetchResultType.Warning) {
         expect(result.warning).toBe(

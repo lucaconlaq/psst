@@ -1,8 +1,6 @@
 import { SecretFetchResult, SecretFetchResultType } from "../../types.js";
-import { execSync } from "child_process";
 import { VaultEditor } from "./VaultEditor.js";
 import { SecretConfig, SecretSource } from "../../types.js";
-import { resourceUsage } from "process";
 import { fetchSecretFromPath } from "./vaultFetchData.js";
 
 export interface VaultSource extends SecretSource {
@@ -20,7 +18,8 @@ export const vaultSource: VaultSource = {
   readCommand: "read",
   fetchSecret: async function (
     secret: SecretConfig,
-    key: string
+    key: string,
+    configPath: string
   ): Promise<SecretFetchResult> {
     try {
       const value = await fetchSecretFromPath(secret.value);

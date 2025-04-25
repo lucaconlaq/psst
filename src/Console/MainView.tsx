@@ -5,6 +5,7 @@ import { SecretsConfig, SecretSource, Env, SecretConfig } from "../types.js";
 
 interface MainViewProps {
   config: SecretsConfig;
+  configPath: string;
   sources: SecretSource[];
   onEdit: (key: string | null) => void;
   onDelete: (key: string) => void;
@@ -13,6 +14,7 @@ interface MainViewProps {
 
 const MainView = ({
   config,
+  configPath,
   sources,
   onEdit,
   onDelete,
@@ -56,7 +58,7 @@ const MainView = ({
         setLoadingSecrets((prev) => new Set(prev).add(secretName));
         const key = configEntries[index][0];
         await new Promise((resolve) => setTimeout(resolve, 100));
-        const result = await source.fetchSecret(secret, key);
+        const result = await source.fetchSecret(secret, key, configPath);
 
         if (result.type === "warning") {
           setWarnings((prev) => ({

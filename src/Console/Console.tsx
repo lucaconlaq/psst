@@ -19,6 +19,7 @@ const Console = ({ config, configFile, sources }: ConsoleProps) => {
   const [currentView, setCurrentView] = useState<View>("main");
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [currentConfig, setCurrentConfig] = useState<SecretsConfig>(config);
+  const configPath = dirname(configFile);
 
   const saveConfig = (config: SecretsConfig): void => {
     const configDir = dirname(configFile);
@@ -79,6 +80,7 @@ const Console = ({ config, configFile, sources }: ConsoleProps) => {
         <Editor
           previousName={editingKey}
           initialName={editingKey || newSecretName()}
+          configPath={configPath}
           secret={
             editingKey
               ? currentConfig[editingKey]
@@ -93,6 +95,7 @@ const Console = ({ config, configFile, sources }: ConsoleProps) => {
       {currentView === "main" && (
         <MainView
           config={currentConfig}
+          configPath={configPath}
           sources={sources}
           onEdit={(key) => {
             setEditingKey(key);

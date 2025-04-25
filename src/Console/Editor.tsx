@@ -9,6 +9,7 @@ interface EditorProps {
   initialName: string;
   secret: SecretConfig;
   sources: SecretSource[];
+  configPath: string;
   onCancel: () => void;
   onSave: (
     previousName: string | null,
@@ -22,6 +23,7 @@ const Editor = ({
   initialName,
   secret,
   sources,
+  configPath,
   onCancel,
   onSave,
 }: EditorProps) => {
@@ -50,7 +52,8 @@ const Editor = ({
             value,
             source: sources[sourceIndex].name as SecretConfig["source"],
           },
-          name
+          name,
+          configPath
         );
         if (result.type === SecretFetchResultType.Success) {
           setFetchedValue(result.value);
@@ -106,6 +109,7 @@ const Editor = ({
           secret={secret}
           name={name}
           source={currentSource}
+          configPath={configPath}
           onComplete={handleSourceEditorComplete}
         />
       ) : (

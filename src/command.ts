@@ -53,7 +53,8 @@ export const setupCommand = () => {
       } else if (cmd == "--help" || cmd == "-h") {
         render(React.createElement(Help, { onBack: () => process.exit(0) }));
       } else {
-        await injectSecrets(config, env, sources);
+        const configPath = dirname(configFile);
+        await injectSecrets(config, env, sources, configPath);
         await runCommand(cmd, args, env);
       }
     });

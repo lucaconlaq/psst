@@ -26,12 +26,14 @@ export interface SecretSource {
   safeValue: (secret: SecretConfig) => string;
   fetchSecret: (
     secret: SecretConfig,
-    key: string
+    key: string,
+    configPath: string
   ) => Promise<SecretFetchResult>;
   editorOptions: SecretEditorOptions[];
   renderEditor: (props: {
     secret: SecretConfig;
     name: string;
+    configPath: string;
     onComplete: (value: string) => void;
   }) => ReactNode;
 }

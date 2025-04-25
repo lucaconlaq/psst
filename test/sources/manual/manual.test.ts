@@ -33,7 +33,7 @@ describe("manualSource", () => {
   describe("fetchSecret", () => {
     it("should return warning for empty secret", async () => {
       const secret: SecretConfig = { value: "", source: "manual" };
-      const result = await manualSource.fetchSecret(secret, "test-key");
+      const result = await manualSource.fetchSecret(secret, "test-key", ".");
       expect(result.type).toBe(SecretFetchResultType.Warning);
       if (result.type === SecretFetchResultType.Warning) {
         expect(result.warning).toBe("Secret [test-key] is empty");
@@ -42,7 +42,7 @@ describe("manualSource", () => {
 
     it("should return success with value for non-empty secret", async () => {
       const secret: SecretConfig = { value: "secret123", source: "manual" };
-      const result = await manualSource.fetchSecret(secret, "test-key");
+      const result = await manualSource.fetchSecret(secret, "test-key", ".");
       expect(result.type).toBe(SecretFetchResultType.Success);
       if (result.type === SecretFetchResultType.Success) {
         expect(result.value).toBe("secret123");

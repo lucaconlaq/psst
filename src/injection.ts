@@ -12,10 +12,11 @@ export const injectSecret = async (
   env: NodeJS.ProcessEnv,
   name: string,
   secret: any,
-  source: SecretSource
+  source: SecretSource,
+  configPath: string
 ): Promise<boolean> => {
   try {
-    const result = await source.fetchSecret(secret, name);
+    const result = await source.fetchSecret(secret, name, configPath);
     if (result.type === "success") {
       env[name] = result.value;
       return true;
@@ -32,7 +33,8 @@ export const injectSecret = async (
 export const injectSecrets = async (
   config: SecretsConfig,
   env: NodeJS.ProcessEnv,
-  sources: SecretSource[]
+  sources: SecretSource[],
+  configPath: string
 ) => {
   let successCount = 0;
 
@@ -44,7 +46,7 @@ export const injectSecrets = async (
       continue;
     }
 
-    if (await injectSecret(env, name, secret, source)) {
+    if (await injectSecret(env, name, secret, source, configPath)) {
       successCount += 1;
     }
   }

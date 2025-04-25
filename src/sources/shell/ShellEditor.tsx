@@ -6,10 +6,16 @@ import { shellSource } from "./shell.js";
 interface ShellEditorProps {
   secret: SecretConfig;
   name: string;
+  configPath: string;
   onComplete: (value: string) => void;
 }
 
-export function ShellEditor({ secret, name, onComplete }: ShellEditorProps) {
+export function ShellEditor({
+  secret,
+  name,
+  configPath,
+  onComplete,
+}: ShellEditorProps) {
   const [currentValue, setCurrentValue] = useState(secret.value);
   const [output, setOutput] = useState("");
   const [warning, setWarning] = useState("");
@@ -23,7 +29,8 @@ export function ShellEditor({ secret, name, onComplete }: ShellEditorProps) {
     } else if (key.downArrow) {
       const result = await shellSource.fetchSecret(
         { value: currentValue, source: secret.source },
-        name
+        name,
+        configPath
       );
       if (result.type === "success") {
         setOutput(result.value);

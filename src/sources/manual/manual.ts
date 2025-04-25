@@ -13,7 +13,7 @@ export const manualSource: SecretSource = {
     { key: "←", description: "go back" },
     { key: "ctrl+v", description: "to paste from clipboard" },
   ],
-  fetchSecret: async (secret, key): Promise<SecretFetchResult> => {
+  fetchSecret: async (secret, key, configPath): Promise<SecretFetchResult> => {
     if (!secret.value) {
       return {
         type: SecretFetchResultType.Warning,

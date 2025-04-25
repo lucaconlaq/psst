@@ -10,9 +10,10 @@ export const shellSource: SecretSource = {
   name: "shell",
   safeValue: (secret) => secret.value,
   referenceName: "shell command",
-  fetchSecret: async (secret, key): Promise<SecretFetchResult> => {
+  fetchSecret: async (secret, key, configPath): Promise<SecretFetchResult> => {
     try {
       const value = execSync(secret.value, {
+        cwd: configPath,
         encoding: "utf8",
         stdio: ["pipe", "pipe", "ignore"],
       }).trim();

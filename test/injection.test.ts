@@ -21,7 +21,8 @@ describe("injectSecret", () => {
         source: "op",
         value: "op://vault/item/field",
       },
-      testOpSource
+      testOpSource,
+      "."
     );
     expect(result).toBe(true);
     expect(env.SECRET).toBe("op://vault/item/field");
@@ -36,7 +37,8 @@ describe("injectSecret", () => {
         source: "shell",
         value: "echo 'shell-secret'",
       },
-      shellSource
+      shellSource,
+      "."
     );
     expect(result).toBe(true);
     expect(env.SECRET).toBe("shell-secret");
@@ -51,7 +53,8 @@ describe("injectSecret", () => {
         source: "manual",
         value: "manual-secret",
       },
-      manualSource
+      manualSource,
+      "."
     );
     expect(result).toBe(true);
     expect(env.SECRET).toBe("manual-secret");
@@ -66,7 +69,8 @@ describe("injectSecret", () => {
         source: "op",
         value: "invalid-op-reference",
       },
-      testOpSource
+      testOpSource,
+      "."
     );
     expect(result).toBe(false);
     expect(env.SECRET).toBeUndefined();
@@ -91,7 +95,12 @@ describe("injectSecrets", () => {
       },
     };
 
-    await injectSecrets(config, env, [testOpSource, shellSource, manualSource]);
+    await injectSecrets(
+      config,
+      env,
+      [testOpSource, shellSource, manualSource],
+      "."
+    );
 
     expect(env.OP_SECRET).toBe("op://vault/item/field");
     expect(env.SHELL_SECRET).toBe("shell-secret");
@@ -100,7 +109,12 @@ describe("injectSecrets", () => {
 
   it("should handle empty config", async () => {
     const env: NodeJS.ProcessEnv = {};
-    await injectSecrets({}, env, [testOpSource, shellSource, manualSource]);
+    await injectSecrets(
+      {},
+      env,
+      [testOpSource, shellSource, manualSource],
+      "."
+    );
     expect(Object.keys(env)).toHaveLength(0);
   });
 
@@ -117,7 +131,12 @@ describe("injectSecrets", () => {
       },
     };
 
-    await injectSecrets(config, env, [testOpSource, shellSource, manualSource]);
+    await injectSecrets(
+      config,
+      env,
+      [testOpSource, shellSource, manualSource],
+      "."
+    );
 
     expect(env.GOOD_SECRET).toBe("good-secret");
     expect(env.BAD_SECRET).toBeUndefined();
