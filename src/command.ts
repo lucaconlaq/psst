@@ -46,6 +46,7 @@ export const setupCommand = () => {
 			const [cmd, ...args] = command;
 
 			if (command.length === 0) {
+				console.clear();
 				render(React.createElement(Console, { config, configFile, sources }));
 			} else if (cmd === "--help" || cmd === "-h") {
 				render(React.createElement(Help, { onBack: () => process.exit(0) }));
