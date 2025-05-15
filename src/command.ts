@@ -37,7 +37,7 @@ export const setupCommand = () => {
 		.version(version)
 		.option("--copy <secret>", "Copy a specific secret to clipboard")
 		.action(async (command: string[], options: { copy?: string }) => {
-			const sources = [opSource, op2faSource, vaultSource, shellSource, op2faSource];
+			const sources = [opSource, op2faSource, vaultSource, shellSource, manualSource];
 
 			if (process.env.PSST_EXPERIMENTAL) {
 				sources.push(terraformSource);

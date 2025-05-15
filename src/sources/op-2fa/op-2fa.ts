@@ -2,7 +2,7 @@ import { type SecretFetchResult, SecretFetchResultType } from "../../types.js";
 import { execSync } from "node:child_process";
 import { OpEditor } from "../op/OpEditor.js";
 import type { SecretConfig, SecretSource } from "../../types.js";
-import { totp } from "otplib";
+import speakeasy from "speakeasy";
 
 export interface OpSource extends SecretSource {
 	executable: string;
@@ -58,8 +58,10 @@ export const op2faSource: OpSource = {
 			if (!secret) {
 				throw new Error("Missing secret in otpauth URL");
 			}
-
-			const token = totp.generate(secret);
+			const token = speakeasy.totp({
+				secret: secret,
+				encoding: "base32",
+			});
 
 			return {
 				type: SecretFetchResultType.Success,
