@@ -13,7 +13,14 @@ interface SecretLineProps {
 
 const DOTS = "••••••••";
 
-function SecretLine({ name, source, secret, value, isSelected, isDeleting, isLoading }: SecretLineProps) {
+const limitLength = (value: string, maxLength: number) => {
+	if (value.length <= maxLength) {
+		return value;
+	}
+	return `${value.slice(0, maxLength)}...`;
+};
+
+const SecretLine = ({ name, source, secret, value, isSelected, isDeleting, isLoading }: SecretLineProps) => {
 	const color = isDeleting ? "red" : isSelected ? "yellow" : undefined;
 
 	return (
@@ -25,10 +32,10 @@ function SecretLine({ name, source, secret, value, isSelected, isDeleting, isLoa
 				<Text color={color}>{source}</Text>
 			</Box>
 			<Box width={40}>
-				<Text color={color}>{value}</Text>
+				<Text color={color}>{limitLength(value, 30)}</Text>
 			</Box>
 			<Box width={40}>
-				<Text color={isLoading ? "yellow" : color}>{isLoading ? "loading..." : secret}</Text>
+				<Text color={isLoading ? "yellow" : color}>{isLoading ? "loading..." : limitLength(secret, 30)}</Text>
 			</Box>
 		</Box>
 	);
