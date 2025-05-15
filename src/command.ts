@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { findConfig, loadConfig } from "./config.js";
 import { terraformSource } from "./sources/terraform/terraform.js";
 import { clipboard } from "./clipboard.js";
+import { op2faSource } from "./sources/op-2fa/op-2fa.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -36,7 +37,7 @@ export const setupCommand = () => {
 		.version(version)
 		.option("--copy <secret>", "Copy a specific secret to clipboard")
 		.action(async (command: string[], options: { copy?: string }) => {
-			const sources = [opSource, shellSource, manualSource, vaultSource];
+			const sources = [opSource, op2faSource, vaultSource, shellSource, op2faSource];
 
 			if (process.env.PSST_EXPERIMENTAL) {
 				sources.push(terraformSource);
