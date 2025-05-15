@@ -4,7 +4,7 @@ A secret management tool that helps you manage and inject secrets into your envi
 
 ![Project Demo](.github/demo.gif)
 
-## Installation
+## 📦 Installation
 
 You can install psst in several ways:
 
@@ -30,7 +30,7 @@ mise use npm:@lucaconlaq/psst
 
 This is the recommended way to install psst as it provides better version management and isolation.
 
-## Usage
+## 🚀 Usage
 
 ### Interactive Console
 
@@ -64,7 +64,7 @@ psst env
 psst sh -c 'echo $A_SECRET'
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 psst looks for a config file in this order:
 
@@ -87,6 +87,8 @@ Example config:
 }
 ```
 
-## License
+## ⚠️ Limitations
 
-MIT
+This tool has only been tested on macOS. While it may work on other Unix-like systems, it hasn't been thoroughly tested on them.
+
+
