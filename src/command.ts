@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { findConfig, loadConfig } from "./config.js";
 import { terraformSource } from "./sources/terraform/terraform.js";
+import { clipboard } from "./clipboard.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -32,7 +34,8 @@ export const setupCommand = () => {
 		.helpOption(false)
 		.addHelpCommand(false)
 		.version(version)
-		.action(async (command: string[]) => {
+		.option("--copy <secret>", "Copy a specific secret to clipboard")
+		.action(async (command: string[], options: { copy?: string }) => {
 			const sources = [opSource, shellSource, manualSource, vaultSource];
 
 			if (process.env.PSST_EXPERIMENTAL) {
@@ -42,6 +45,10 @@ export const setupCommand = () => {
 			const env: NodeJS.ProcessEnv = { ...process.env };
 			const configFile = findConfig();
 			const config = await loadConfig();
+
+			if (options.copy) {
+				await clipboard(options.copy, config, sources, dirname(configFile));
+			}
 
 			const [cmd, ...args] = command;
 
