@@ -1,8 +1,8 @@
-import { existsSync } from "fs";
-import { join, resolve } from "path";
-import { homedir } from "os";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { tryCatch } from "./utils/tryCatch.js";
-import { readFile } from "fs/promises";
+import { readFile } from "node:fs/promises";
 import type { SecretsConfig } from "./types.js";
 
 const CONFIG_FILENAMES = ["psst.json", ".psst.json"];

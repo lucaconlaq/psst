@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from "ink";
 import { useState, useEffect } from "react";
 import type { SecretConfig } from "../../types.js";
-import { execSync } from "child_process";
+import { execSync } from "node:child_process";
 import { opSource } from "./op.js";
 
 interface OpEditorProps {

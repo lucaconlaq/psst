@@ -1,7 +1,7 @@
 import { Box, Text, useInput } from "ink";
 import { useState } from "react";
 import { Secrets } from "./Secrets.js";
-import type { SecretsConfig, SecretSource, Env, } from "../types.js";
+import type { SecretsConfig, SecretSource, Env } from "../types.js";
 
 interface MainViewProps {
 	config: SecretsConfig;

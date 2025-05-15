@@ -1,5 +1,5 @@
 import { type SecretFetchResult, SecretFetchResultType } from "../../types.js";
-import { execSync } from "child_process";
+import { execSync } from "node:child_process";
 import { OpEditor } from "./OpEditor.js";
 import type { SecretConfig, SecretSource } from "../../types.js";
 
@@ -24,7 +24,7 @@ export const opSource: OpSource = {
 		} catch (error) {
 			return {
 				type: SecretFetchResultType.Warning,
-				warning: `1Password CLI is not installed`,
+				warning: "1Password CLI is not installed",
 			};
 		}
 

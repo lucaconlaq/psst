@@ -20,10 +20,9 @@ export const injectSecret = async (
 		if (result.type === "success") {
 			env[name] = result.value;
 			return true;
-		} else {
-			warn(result.warning);
-			return false;
 		}
+		warn(result.warning);
+		return false;
 	} catch (error) {
 		warn(`Failed to fetch secret "${name}" from ${secret.source}`);
 		return false;
@@ -51,10 +50,10 @@ export const injectSecrets = async (
 		}
 	}
 
-	if (successCount == 0) {
+	if (successCount === 0) {
 		info("No secrets injected");
-	} else if (successCount == 1) {
-		info(`injected 1 secret`);
+	} else if (successCount === 1) {
+		info("injected 1 secret");
 	} else {
 		info(`injected ${successCount} secrets`);
 	}

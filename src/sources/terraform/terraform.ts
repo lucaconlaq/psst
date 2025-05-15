@@ -1,8 +1,8 @@
 import { type SecretFetchResult, SecretFetchResultType } from "../../types.js";
-import { execSync } from "child_process";
+import { execSync } from "node:child_process";
 import { TerraformEditor } from "./TerraformEditor.js";
 import type { SecretConfig, SecretSource } from "../../types.js";
-import { join } from "path";
+import { join } from "node:path";
 
 export interface TerraformSource extends SecretSource {
 	executable: string;
@@ -25,7 +25,7 @@ export const terraformSource: TerraformSource = {
 		} catch (error) {
 			return {
 				type: SecretFetchResultType.Warning,
-				warning: `Terraform CLI is not installed`,
+				warning: "Terraform CLI is not installed",
 			};
 		}
 
@@ -48,7 +48,7 @@ export const terraformSource: TerraformSource = {
 			}).trim();
 
 			const json = JSON.parse(result);
-			const value = json[terraformItem]["value"];
+			const value = json[terraformItem].value;
 
 			if (!value) {
 				return {

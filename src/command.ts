@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { readFileSync, } from "fs";
+import { readFileSync } from "node:fs";
 import Console from "./Console/Console.js";
 import { opSource } from "./sources/op/op.js";
 import { shellSource } from "./sources/shell/shell.js";
@@ -10,8 +10,8 @@ import Help from "./Console/Help.js";
 import { injectSecrets } from "./injection.js";
 import { runCommand } from "./runCommand.js";
 import { vaultSource } from "./sources/vault/vault.js";
-import { fileURLToPath } from "url";
-import { dirname, join } from "path";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { findConfig, loadConfig } from "./config.js";
 import { terraformSource } from "./sources/terraform/terraform.js";
 const __filename = fileURLToPath(import.meta.url);
@@ -47,7 +47,7 @@ export const setupCommand = () => {
 
 			if (command.length === 0) {
 				render(React.createElement(Console, { config, configFile, sources }));
-			} else if (cmd == "--help" || cmd == "-h") {
+			} else if (cmd === "--help" || cmd === "-h") {
 				render(React.createElement(Help, { onBack: () => process.exit(0) }));
 			} else {
 				const configPath = dirname(configFile);

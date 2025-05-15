@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn } from "node:child_process";
 
 export const runCommand = (cmd: string, args: string[], env: NodeJS.ProcessEnv) => {
 	const proc = spawn(cmd, args, {

@@ -1,5 +1,5 @@
 import { type SecretSource, type SecretFetchResult, SecretFetchResultType } from "../../types.js";
-import { execSync } from "child_process";
+import { execSync } from "node:child_process";
 import { ShellEditor } from "./ShellEditor.js";
 
 export const shellSource: SecretSource = {

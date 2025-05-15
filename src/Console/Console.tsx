@@ -5,8 +5,8 @@ import Editor from "./Editor.js";
 import Help from "./Help.js";
 import MainView from "./MainView.js";
 import type { SecretSource } from "../types.js";
-import { writeFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 interface ConsoleProps {
 	config: SecretsConfig;
