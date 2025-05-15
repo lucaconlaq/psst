@@ -2,6 +2,7 @@ import { Box, Text, useInput } from "ink";
 import { useState } from "react";
 import { Secrets } from "./Secrets.js";
 import type { SecretsConfig, SecretSource, Env } from "../types.js";
+import { execSync } from "node:child_process";
 
 interface MainViewProps {
 	config: SecretsConfig;
@@ -18,9 +19,58 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 	const [toDelete, setToDelete] = useState<string | null>(null);
 	const [loadedSecrets, setLoadedSecrets] = useState<Env>({});
 	const [loadingSecrets, setLoadingSecrets] = useState<Set<string>>(new Set());
-	const [warnings, setWarnings] = useState<Record<string, string>>({});
+	const [warnings, setWarnings] = useState<string | null>(null);
 
 	const configEntries = Object.entries(config);
+
+	const handleCopyToClipboard = async (): Promise<void> => {
+		//execSync(`echo "${secretValue}" | pbcopy`);
+
+		if (index >= 0) {
+			const [secretName, secret] = configEntries[index];
+			const source = sources.find((s) => s.name === secret.source);
+
+			if (!source) {
+				setWarnings(`Unknown source "${secret.source}"`);
+				return;
+			}
+
+			if (loadedSecrets[secretName]) {
+				execSync(`echo "${loadedSecrets[secretName]}" | pbcopy`);
+				return;
+			}
+
+			try {
+				setLoadingSecrets((prev) => {
+					const next = new Set(prev);
+					next.add(secretName);
+					return next;
+				});
+				const key = configEntries[index][0];
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				const result = await source.fetchSecret(secret, key, configPath);
+
+				if (result.type === "warning") {
+					setWarnings(result.warning);
+					return;
+				}
+				if (result.type === "success" && result.value.length === 0) {
+					setWarnings(`Secret [${key}] is empty`);
+					return;
+				}
+				execSync(`echo "${result.value}" | pbcopy`);
+				setWarnings(null);
+			} catch (error) {
+				setWarnings(`Failed to fetch from ${secret.source}`);
+			} finally {
+				setLoadingSecrets((prev) => {
+					const next = new Set(prev);
+					next.delete(secretName);
+					return next;
+				});
+			}
+		}
+	};
 
 	const handleToggleSecret = async (): Promise<void> => {
 		if (index >= 0) {
@@ -28,10 +78,7 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 			const source = sources.find((s) => s.name === secret.source);
 
 			if (!source) {
-				setWarnings((prev) => ({
-					...prev,
-					[secretName]: `Unknown source "${secret.source}"`,
-				}));
+				setWarnings(`Unknown source "${secret.source}"`);
 				return;
 			}
 
@@ -39,45 +86,32 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 				const newSecrets = { ...loadedSecrets };
 				delete newSecrets[secretName];
 				setLoadedSecrets(newSecrets);
-				setWarnings((prev) => {
-					const newWarnings = { ...prev };
-					delete newWarnings[secretName];
-					return newWarnings;
-				});
+				setWarnings(null);
 				return;
 			}
 
 			try {
-				setLoadingSecrets((prev) => new Set(prev).add(secretName));
+				setLoadingSecrets((prev) => {
+					const next = new Set(prev);
+					next.add(secretName);
+					return next;
+				});
 				const key = configEntries[index][0];
 				await new Promise((resolve) => setTimeout(resolve, 100));
 				const result = await source.fetchSecret(secret, key, configPath);
 
 				if (result.type === "warning") {
-					setWarnings((prev) => ({
-						...prev,
-						[secretName]: result.warning,
-					}));
+					setWarnings(result.warning);
 					return;
 				}
 				if (result.type === "success" && result.value.length === 0) {
-					setWarnings((prev) => ({
-						...prev,
-						[secretName]: `Secret [${key}] is empty`,
-					}));
+					setWarnings(`Secret [${key}] is empty`);
 					return;
 				}
 				setLoadedSecrets({ ...loadedSecrets, [secretName]: result.value });
-				setWarnings((prev) => {
-					const newWarnings = { ...prev };
-					delete newWarnings[secretName];
-					return newWarnings;
-				});
+				setWarnings(null);
 			} catch (error) {
-				setWarnings((prev) => ({
-					...prev,
-					[secretName]: `Failed to fetch from ${secret.source}`,
-				}));
+				setWarnings(`Failed to fetch from ${secret.source}`);
 			} finally {
 				setLoadingSecrets((prev) => {
 					const next = new Set(prev);
@@ -103,7 +137,7 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 		if (index >= 0) {
 			const [secretName] = configEntries[index];
 			setToDelete(secretName);
-			setWarnings({});
+			setWarnings(null);
 		}
 	};
 
@@ -124,13 +158,13 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 
 	const handleNavigateUp = (): void => {
 		setIndex(Math.max(0, index - 1));
-		setWarnings({});
+		setWarnings(null);
 		setToDelete(null);
 	};
 
 	const handleNavigateDown = (): void => {
 		setIndex(Math.min(configEntries.length - 1, index + 1));
-		setWarnings({});
+		setWarnings(null);
 		setToDelete(null);
 	};
 
@@ -162,6 +196,9 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 			case "d":
 				handleDeleteSecret();
 				break;
+			case "c":
+				handleCopyToClipboard();
+				break;
 		}
 
 		if (key.rightArrow) {
@@ -192,6 +229,8 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 					<Text> to delete, </Text>
 					<Text color="yellow">a</Text>
 					<Text> to add, </Text>
+					<Text color="yellow">c</Text>
+					<Text> to copy to clipboard, </Text>
 					<Text color="yellow">h</Text>
 					<Text> for help.</Text>
 				</Text>
@@ -204,11 +243,11 @@ const MainView = ({ config, configPath, sources, onEdit, onDelete, onHelp }: Mai
 				deletingName={toDelete}
 				sources={sources}
 			/>
-			{Object.entries(warnings).map(([name, warning]) => (
-				<Box key={`warning-${name}`} marginTop={1}>
-					<Text color="yellow">⚠️ {warning}</Text>
+			{warnings && (
+				<Box marginTop={1}>
+					<Text color="yellow">⚠️ {warnings}</Text>
 				</Box>
-			))}
+			)}
 			{toDelete && (
 				<Box marginTop={1}>
 					<Text color="red" bold>
