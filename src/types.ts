@@ -1,44 +1,40 @@
-import { ReactNode } from "react";
+import type { ReactNode } from "react";
 
 export interface SecretConfig {
-  value: string;
-  source: "manual" | "op" | "vault" | "shell";
+	value: string;
+	source: "manual" | "op" | "vault" | "shell";
 }
 
 export interface SecretsConfig {
-  [key: string]: SecretConfig;
+	[key: string]: SecretConfig;
 }
 
 export type Env = Record<string, string>;
 
 export enum SecretFetchResultType {
-  Success = "success",
-  Warning = "warning",
+	Success = "success",
+	Warning = "warning",
 }
 
 export type SecretFetchResult =
-  | { type: SecretFetchResultType.Success; value: string }
-  | { type: SecretFetchResultType.Warning; warning: string };
+	| { type: SecretFetchResultType.Success; value: string }
+	| { type: SecretFetchResultType.Warning; warning: string };
 
 export interface SecretSource {
-  name: string;
-  referenceName: string;
-  safeValue: (secret: SecretConfig) => string;
-  fetchSecret: (
-    secret: SecretConfig,
-    key: string,
-    configPath: string
-  ) => Promise<SecretFetchResult>;
-  editorOptions: SecretEditorOptions[];
-  renderEditor: (props: {
-    secret: SecretConfig;
-    name: string;
-    configPath: string;
-    onComplete: (value: string) => void;
-  }) => ReactNode;
+	name: string;
+	referenceName: string;
+	safeValue: (secret: SecretConfig) => string;
+	fetchSecret: (secret: SecretConfig, key: string, configPath: string) => Promise<SecretFetchResult>;
+	editorOptions: SecretEditorOptions[];
+	renderEditor: (props: {
+		secret: SecretConfig;
+		name: string;
+		configPath: string;
+		onComplete: (value: string) => void;
+	}) => ReactNode;
 }
 
 export interface SecretEditorOptions {
-  key: string;
-  description: string;
+	key: string;
+	description: string;
 }

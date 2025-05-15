@@ -11,7 +11,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest"
+    "test": "vitest",
+    "check": "tsc --noEmit",
+    "format": "biome format --write src test",
+    "lint": "biome lint --write src test"
   },
   "dependencies": {
     "@inkjs/ui": "^1.0.0",
@@ -19,6 +22,7 @@
     "ink": "^4.4.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "1.9.4",
     "@types/mock-fs": "^4.13.4",
     "@types/node": "^20.11.24",
     "@types/react": "^19.1.2",

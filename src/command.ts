@@ -1,6 +1,5 @@
 import { Command } from "commander";
-import { readFileSync, existsSync } from "fs";
-import { SecretsConfig } from "./types.js";
+import { readFileSync, } from "fs";
 import Console from "./Console/Console.js";
 import { opSource } from "./sources/op/op.js";
 import { shellSource } from "./sources/shell/shell.js";
@@ -19,45 +18,43 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export const setupCommand = () => {
-  const program = new Command();
+	const program = new Command();
 
-  const packageJson = JSON.parse(
-    readFileSync(join(__dirname, "../package.json"), "utf8")
-  );
-  const version = packageJson.version;
+	const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf8"));
+	const version = packageJson.version;
 
-  program
-    .name("psst")
-    .description("A secret management tool")
-    .argument("[command...]", "Command to run with secrets")
-    .allowUnknownOption()
-    .passThroughOptions()
-    .helpOption(false)
-    .addHelpCommand(false)
-    .version(version)
-    .action(async (command: string[]) => {
-      const sources = [opSource, shellSource, manualSource, vaultSource];
+	program
+		.name("psst")
+		.description("A secret management tool")
+		.argument("[command...]", "Command to run with secrets")
+		.allowUnknownOption()
+		.passThroughOptions()
+		.helpOption(false)
+		.addHelpCommand(false)
+		.version(version)
+		.action(async (command: string[]) => {
+			const sources = [opSource, shellSource, manualSource, vaultSource];
 
-      if (process.env.PSST_EXPERIMENTAL) {
-        sources.push(terraformSource);
-      }
+			if (process.env.PSST_EXPERIMENTAL) {
+				sources.push(terraformSource);
+			}
 
-      const env: NodeJS.ProcessEnv = { ...process.env };
-      const configFile = findConfig();
-      const config = await loadConfig();
+			const env: NodeJS.ProcessEnv = { ...process.env };
+			const configFile = findConfig();
+			const config = await loadConfig();
 
-      const [cmd, ...args] = command;
+			const [cmd, ...args] = command;
 
-      if (command.length === 0) {
-        render(React.createElement(Console, { config, configFile, sources }));
-      } else if (cmd == "--help" || cmd == "-h") {
-        render(React.createElement(Help, { onBack: () => process.exit(0) }));
-      } else {
-        const configPath = dirname(configFile);
-        await injectSecrets(config, env, sources, configPath);
-        await runCommand(cmd, args, env);
-      }
-    });
+			if (command.length === 0) {
+				render(React.createElement(Console, { config, configFile, sources }));
+			} else if (cmd == "--help" || cmd == "-h") {
+				render(React.createElement(Help, { onBack: () => process.exit(0) }));
+			} else {
+				const configPath = dirname(configFile);
+				await injectSecrets(config, env, sources, configPath);
+				await runCommand(cmd, args, env);
+			}
+		});
 
-  return program;
+	return program;
 };
