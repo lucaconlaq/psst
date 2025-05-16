@@ -1,5 +1,5 @@
 dist/
 node_modules/
-.psst.json
+psst.json
 mise.local.toml
 terraform/
