@@ -16,6 +16,7 @@ import { findConfig, loadConfig } from "./config.js";
 import { terraformSource } from "./sources/terraform/terraform.js";
 import { clipboard } from "./clipboard.js";
 import { op2faSource } from "./sources/op-2fa/op-2fa.js";
+import { writeEnvFile } from "./writeEnvFile.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,6 +26,12 @@ export const setupCommand = () => {
 
 	const packageJson = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf8"));
 	const version = packageJson.version;
+
+	type CommandOptions = {
+		copy?: string;
+		write?: boolean;
+		help?: boolean;
+	};
 
 	program
 		.name("psst")
@@ -36,7 +43,9 @@ export const setupCommand = () => {
 		.addHelpCommand(false)
 		.version(version)
 		.option("--copy <secret>", "Copy a specific secret to clipboard")
-		.action(async (command: string[], options: { copy?: string }) => {
+		.option("--write", "Create an env file")
+		.option("-h, --help", "Show help")
+		.action(async (command: string[], options: CommandOptions) => {
 			const sources = [opSource, op2faSource, vaultSource, shellSource, manualSource];
 
 			if (process.env.PSST_EXPERIMENTAL) {
@@ -47,17 +56,17 @@ export const setupCommand = () => {
 			const configFile = findConfig();
 			const config = await loadConfig();
 
-			if (options.copy) {
-				await clipboard(options.copy, config, sources, dirname(configFile));
-			}
-
 			const [cmd, ...args] = command;
 
-			if (command.length === 0) {
+			if (options.copy) {
+				await clipboard(options.copy, config, sources, dirname(configFile));
+			} else if (options.write) {
+				await writeEnvFile(config, sources, dirname(configFile));
+			} else if (options.help) {
+				render(React.createElement(Help, { onBack: () => process.exit(0) }));
+			} else if (command.length === 0) {
 				console.clear();
 				render(React.createElement(Console, { config, configFile, sources }));
-			} else if (cmd === "--help" || cmd === "-h") {
-				render(React.createElement(Help, { onBack: () => process.exit(0) }));
 			} else {
 				const configPath = dirname(configFile);
 				await injectSecrets(config, env, sources, configPath);
