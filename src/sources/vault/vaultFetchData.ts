@@ -69,6 +69,11 @@ export const fetchSecretFromPath = async (pathWithSecret: string): Promise<strin
 			throw new Error(`Secret key '${secretKey}' not found in path '${path}'`);
 		}
 
+		// If the secret is an object, stringify it
+		if (typeof secret === "object" && secret !== null) {
+			return JSON.stringify(secret);
+		}
+
 		return secret;
 	} catch (error) {
 		if (error instanceof Error) {
