@@ -1,0 +1,8 @@
+[tools]
+op = "2.30.3"
+vault = "1.19.1"
+pi = "latest"
+rust = "latest"
+
+[tool_alias]
+pi = "npm:@earendil-works/pi-coding-agent"
