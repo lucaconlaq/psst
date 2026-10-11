@@ -211,7 +211,7 @@ fn help_version_and_downstream_options() {
         .arg("--version")
         .assert()
         .success()
-        .stdout("psst 2.0.0-beta.1\n");
+        .stdout("psst 2.0.0-alpha.1\n");
     f.script("capture", "printf '%s|%s|%s' \"$1\" \"$2\" \"$3\"");
     f.command()
         .args(["capture", "--copy", "--write", "--help"])
@@ -222,7 +222,7 @@ fn help_version_and_downstream_options() {
         .args(["--version", "--copy"])
         .assert()
         .success()
-        .stdout("psst 2.0.0-beta.1\n");
+        .stdout("psst 2.0.0-alpha.1\n");
     f.command().arg("--copy").assert().failure();
     f.command().assert().failure(); // non-terminal UI fails clearly instead of hanging
 }
