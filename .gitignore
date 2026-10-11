@@ -1,0 +1,6 @@
+/target/
+psst.json
+.psst.json
+.env
+mise.local.toml
+*.psst-lock
