@@ -1,4 +1,8 @@
-# psst 🤫
+# psst
+
+<p align="center">
+  <img src="./.github/logo.png" alt="psst logo" width="200" />
+</p>
 
 A secret management tool that helps you manage and inject secrets into your environment. Supports [1Password CLI](https://developer.1password.com/docs/cli/), [Vault](https://developer.hashicorp.com/vault), Terraform outputs, shell commands, and manual values. All providers are available by default.
 
