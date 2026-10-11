@@ -59,7 +59,8 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
       - name: Test
-        run: cargo +stable test --locked --target "${{ matrix.target }}"
+        timeout-minutes: 10
+        run: cargo +stable test --locked --target "${{ matrix.target }}" -- --nocapture
       - name: Build
         run: cargo +stable build --locked --release --target "${{ matrix.target }}"
       - name: Package release archive

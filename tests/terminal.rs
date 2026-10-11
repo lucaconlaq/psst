@@ -13,7 +13,7 @@ use std::{
 
 struct Pty {
     master: File,
-    slave: File,
+    _slave: File,
     child: Child,
     output: String,
     before: libc::termios,
@@ -23,7 +23,7 @@ impl Pty {
     fn start(config: &Path, bin: Option<&Path>) -> Self {
         let mut master = -1;
         let mut slave = -1;
-        let size = libc::winsize {
+        let mut size = libc::winsize {
             ws_row: 30,
             ws_col: 120,
             ws_xpixel: 0,
@@ -35,15 +35,22 @@ impl Pty {
                     &mut master,
                     &mut slave,
                     std::ptr::null_mut(),
-                    std::ptr::null(),
-                    &size,
+                    std::ptr::null_mut(),
+                    &raw mut size,
                 )
             },
             0
         );
         let master = unsafe { File::from_raw_fd(master) };
+        // Poll readiness does not guarantee that a subsequent PTY read won't block.
+        let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) },
+            0
+        );
         let slave = unsafe { File::from_raw_fd(slave) };
-        let before = attrs(&slave);
+        let before = attrs(&master);
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("psst"));
         command
             .env("PSST_CONFIG", config)
@@ -62,7 +69,7 @@ impl Pty {
                 if libc::setsid() < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
-                if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                if libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 Ok(())
@@ -71,26 +78,28 @@ impl Pty {
         let child = command.spawn().unwrap();
         Self {
             master,
-            slave,
+            _slave: slave,
             child,
             output: String::new(),
             before,
             parser: vt100::Parser::new(30, 120, 0),
         }
     }
-    fn read(&mut self) {
+    fn read(&mut self) -> usize {
         let mut poll = libc::pollfd {
             fd: self.master.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
-        if unsafe { libc::poll(&mut poll, 1, 20) } > 0 {
+        if unsafe { libc::poll(&mut poll, 1, 20) } > 0 && poll.revents & libc::POLLIN != 0 {
             let mut buf = [0; 65536];
             if let Ok(n) = self.master.read(&mut buf) {
                 self.output.push_str(&String::from_utf8_lossy(&buf[..n]));
                 self.parser.process(&buf[..n]);
+                return n;
             }
         }
+        0
     }
     fn wait_text(&mut self, text: &str) {
         let start = Instant::now();
@@ -105,6 +114,21 @@ impl Pty {
         }
         panic!("Missing {text:?} in terminal output: {}", self.output);
     }
+    fn wait_file(&mut self, path: &Path) {
+        let start = Instant::now();
+        while !path.exists() {
+            // Keep draining output so a full PTY buffer cannot block the UI.
+            self.read();
+            if let Some(status) = self.child.try_wait().unwrap() {
+                panic!("psst exited {status} before saving: {}", self.output);
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "Config was not saved: {}",
+                self.output
+            );
+        }
+    }
     fn send(&mut self, bytes: &[u8]) {
         self.output.clear();
         self.master.write_all(bytes).unwrap();
@@ -115,7 +139,7 @@ impl Pty {
         loop {
             self.read();
             if let Some(status) = self.child.try_wait().unwrap() {
-                assert!(status.success());
+                assert!(status.success(), "psst exited {status}: {}", self.output);
                 break;
             }
             assert!(start.elapsed() < Duration::from_secs(5), "UI did not exit");
@@ -130,13 +154,17 @@ impl Pty {
             if unsafe { libc::poll(&mut poll, 1, 0) } <= 0 || poll.revents & libc::POLLIN == 0 {
                 break;
             }
-            self.read();
+            // A closed PTY can remain readable at EOF, notably on macOS.
+            if self.read() == 0 {
+                break;
+            }
         }
         assert!(
             self.output.contains("\x1b[?1049l"),
             "alternate screen was not restored"
         );
-        let after = attrs(&self.slave);
+        // macOS revokes the slave when its controlling session exits.
+        let after = attrs(&self.master);
         assert_eq!(self.before.c_lflag, after.c_lflag);
         assert_eq!(self.before.c_iflag, after.c_iflag);
     }
@@ -151,16 +179,11 @@ fn attrs(file: &File) -> libc::termios {
     let mut attr = std::mem::MaybeUninit::uninit();
     assert_eq!(
         unsafe { libc::tcgetattr(file.as_raw_fd(), attr.as_mut_ptr()) },
-        0
+        0,
+        "tcgetattr failed: {}",
+        std::io::Error::last_os_error()
     );
     unsafe { attr.assume_init() }
-}
-fn wait_file(path: &Path) {
-    let start = Instant::now();
-    while !path.exists() {
-        assert!(start.elapsed() < Duration::from_secs(5));
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 #[test]
 fn actual_keys_add_save_reveal_hide_delete_and_restore_terminal() {
@@ -174,7 +197,7 @@ fn actual_keys_add_save_reveal_hide_delete_and_restore_terminal() {
     pty.send(b"\t\t\x1b[200~literal $() ' secret\x1b[201~"); // bracketed paste
     std::thread::sleep(Duration::from_millis(100));
     pty.send(b"\x13"); // Ctrl+S
-    wait_file(&config);
+    pty.wait_file(&config);
     pty.wait_text("Saved securely");
     let json: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
     assert_eq!(json["SECRET_1"]["value"], "literal $() ' secret");

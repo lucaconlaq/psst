@@ -81,7 +81,12 @@ fn config_cwd_original_environment_and_caller_cwd() {
     }));
     let caller = f.temp.path().join("caller");
     fs::create_dir(&caller).unwrap();
-    let expected = format!("original/{}|{}", f.temp.path().display(), caller.display());
+    // Shell PWD resolves symlinks such as macOS /var -> /private/var.
+    let expected = format!(
+        "original/{}|{}",
+        f.temp.path().canonicalize().unwrap().display(),
+        caller.canonicalize().unwrap().display()
+    );
     f.command()
         .current_dir(&caller)
         .env("A", "original")
