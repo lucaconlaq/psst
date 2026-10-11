@@ -4,7 +4,7 @@
   <img src="./.github/logo.png" alt="psst logo" width="200" />
 </p>
 
-A secret management tool that helps you manage and inject secrets into your environment. Supports [1Password CLI](https://developer.1password.com/docs/cli/), [Vault](https://developer.hashicorp.com/vault), Terraform outputs, shell commands, and manual values. All providers are available by default.
+A secret management tool that helps you manage and inject secrets into your environment. Supports [1Password CLI](https://developer.1password.com/docs/cli/), [Vault](https://developer.hashicorp.com/vault), [Terraform](https://developer.hashicorp.com/terraform) outputs, shell commands, and manual values. All providers are available by default.
 
 **2.0.0-beta.1 is a complete rewrite in Rust** of the original npm-distributed JavaScript/TypeScript application. This is a prerelease: development and testing will continue through additional betas before the stable **2.0.0** release.
 
