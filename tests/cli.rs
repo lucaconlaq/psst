@@ -114,6 +114,66 @@ fn four_fetches_are_concurrent_through_the_cli() {
         .stdout("result0,result1,result2,result3");
 }
 #[test]
+fn op_reads_share_a_queue_without_blocking_other_providers() {
+    let f = Fixture::new(json!({
+        "FAILED": {"source":"op", "value":"op://v/fail/field"},
+        "OP": {"source":"op", "value":"op://v/item/field"},
+        "OTP": {"source":"op 2FA", "value":"op://v/otp/seed"},
+        "SHELL": {"source":"shell", "value":"touch shell-ready; printf shellvalue"}
+    }));
+    f.script(
+        "op",
+        r#"
+[ "$1" = read ] || exit 9
+if ! mkdir active 2>/dev/null; then
+    touch overlap
+    exit 8
+fi
+trap 'rmdir active' EXIT
+while [ ! -f shell-ready ]; do sleep 0.01; done
+sleep 0.05
+printf '%s\n' "$2" >> reads
+case "$2" in
+    op://v/fail/field) exit 7 ;;
+    op://v/item/field) printf opvalue ;;
+    op://v/otp/seed) printf 'otpauth://totp/demo?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' ;;
+    *) exit 10 ;;
+esac
+"#,
+    );
+    f.command()
+        .env("PSST_TIMEOUT", "3")
+        .env("FAILED", "inherited")
+        .args([
+            "/bin/sh",
+            "-c",
+            "[ ${#OTP} = 6 ] || exit 6; printf '%s|%s|%s' \"$FAILED\" \"$OP\" \"$SHELL\"",
+        ])
+        .assert()
+        .success()
+        .stdout("inherited|opvalue|shellvalue");
+    assert!(!f.temp.path().join("overlap").exists());
+    assert_eq!(
+        fs::read_to_string(f.temp.path().join("reads")).unwrap(),
+        "op://v/fail/field\nop://v/item/field\nop://v/otp/seed\n"
+    );
+}
+#[test]
+fn op_timeout_releases_the_queue_for_remaining_reads() {
+    let f = Fixture::new(json!({
+        "SLOW": {"source":"op", "value":"op://v/slow/field"},
+        "NEXT": {"source":"op", "value":"op://v/next/field"}
+    }));
+    f.script("op", "case \"$2\" in\n op://v/slow/field) sleep 20;;\n op://v/next/field) printf nextvalue;;\n *) exit 9;; esac");
+    f.command()
+        .env("PSST_TIMEOUT", "1")
+        .env("SLOW", "inherited")
+        .args(["/bin/sh", "-c", "printf '%s|%s' \"$SLOW\" \"$NEXT\""])
+        .assert()
+        .success()
+        .stdout("inherited|nextvalue");
+}
+#[test]
 fn op_vault_and_terraform_use_literal_argv() {
     let f = Fixture::new(json!({
         "OP": {"source":"op", "value":"op://v/$(touch BAD)/field"},
@@ -211,7 +271,7 @@ fn help_version_and_downstream_options() {
         .arg("--version")
         .assert()
         .success()
-        .stdout("psst 2.0.0-alpha.1\n");
+        .stdout("psst 2.0.0-alpha.2\n");
     f.script("capture", "printf '%s|%s|%s' \"$1\" \"$2\" \"$3\"");
     f.command()
         .args(["capture", "--copy", "--write", "--help"])
@@ -222,7 +282,7 @@ fn help_version_and_downstream_options() {
         .args(["--version", "--copy"])
         .assert()
         .success()
-        .stdout("psst 2.0.0-alpha.1\n");
+        .stdout("psst 2.0.0-alpha.2\n");
     f.command().arg("--copy").assert().failure();
     f.command().assert().failure(); // non-terminal UI fails clearly instead of hanging
 }
@@ -308,6 +368,37 @@ fn signals_are_preserved_after_exec_and_cancel_fetches() {
     }
     assert_eq!(child.wait().unwrap().code(), Some(130));
     assert_process_dead(pid);
+}
+#[test]
+fn cancellation_kills_active_op_read_without_starting_queued_reads() {
+    let f = Fixture::new(json!({
+        "FIRST": {"source":"op", "value":"op://v/first/field"},
+        "QUEUED": {"source":"op 2FA", "value":"op://v/queued/seed"}
+    }));
+    f.script("op", "case \"$2\" in\n op://v/first/field) printf '%s' $$ > fetching; sleep 20;;\n *) touch queued-started; exit 9;; esac");
+    let mut child = StdCommand::new(binary())
+        .current_dir(f.temp.path())
+        .env("PSST_CONFIG", &f.config)
+        .env("PSST_TIMEOUT", "30")
+        .env(
+            "PATH",
+            format!("{}:{}", f.bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .arg("true")
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for(&f.temp.path().join("fetching"));
+    let pid = fs::read_to_string(f.temp.path().join("fetching"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+    assert_eq!(child.wait().unwrap().code(), Some(130));
+    assert_process_dead(pid);
+    assert!(!f.temp.path().join("queued-started").exists());
 }
 #[test]
 fn decoded_json_nul_is_a_fetch_failure_not_a_launch_failure() {

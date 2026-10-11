@@ -64,7 +64,11 @@ All registered providers are available by default.
 Normal callers use `providers::fetch`, which looks up a registered provider and
 rejects NUL bytes in its result. It returns `Zeroizing<String>`.
 `providers::all` starts all fetches concurrently, preserving config order and
-individual failures.
+individual failures. The `op` and `op 2FA` providers share a process-wide async
+queue for `op read` calls to avoid concurrent authentication prompts. Other
+providers remain concurrent. A read's timeout begins after it acquires the queue;
+errors, timeouts, and cancellation release the queue. This does not cache secrets
+or authentication tokens, and does not serialize reference-browser commands.
 
 ## Optional behavior
 

@@ -11,7 +11,11 @@ use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::Mutex;
 use zeroize::Zeroizing;
+
+// Share one queue across op and op 2FA so reads cannot race authentication.
+static READ_GATE: Mutex<()> = Mutex::const_new(());
 
 pub(super) struct Op {
     pub(super) otp: bool,
@@ -31,7 +35,10 @@ impl Provider for Op {
             if !value.starts_with("op://") {
                 bail!("1Password reference must start with op://");
             }
-            let value = process::output("op", &["read", value], dir).await?;
+            let value = {
+                let _guard = READ_GATE.lock().await;
+                process::output("op", &["read", value], dir).await?
+            };
             if value.is_empty() {
                 bail!("1Password secret is empty");
             }
