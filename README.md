@@ -6,7 +6,7 @@
 
 A secret management tool that helps you manage and inject secrets into your environment. Supports [1Password CLI](https://developer.1password.com/docs/cli/), [Vault](https://developer.hashicorp.com/vault), [Terraform](https://developer.hashicorp.com/terraform) outputs, shell commands, and manual values. All providers are available by default.
 
-**2.0.0-alpha.2 is a complete rewrite in Rust** of the original npm-distributed JavaScript/TypeScript application. This is an alpha prerelease: development and testing will continue through alpha and beta prereleases before the stable **2.0.0** release.
+**2.0.0-alpha.3 is a complete rewrite in Rust** of the original npm-distributed JavaScript/TypeScript application. This is an alpha prerelease: development and testing will continue through alpha and beta prereleases before the stable **2.0.0** release.
 
 ![Project Demo](.github/demo.gif)
 
@@ -33,6 +33,8 @@ psst <any command>
 ```
 
 Secrets are fetched concurrently, except that 1Password reads (`op` and `op 2FA`) share a queue to avoid racing authentication. Authentication remains managed by the 1Password CLI; psst does not cache authentication tokens.
+
+Status messages and diagnostics go to stderr, keeping command stdout clean. On a terminal, status messages are green, warnings yellow, and errors red. Set `NO_COLOR` to disable colors; redirected stderr and `TERM=dumb` also use plain text.
 
 ### Examples
 
@@ -96,7 +98,7 @@ Providers live in separate modules under `src/providers/`, with a shared interfa
 
 Every branch push and pull request runs formatting and Clippy checks, tests, and release builds for Linux and macOS on both x86_64 and ARM64. Linux release binaries use musl.
 
-Pushing a version tag matching `Cargo.toml` (for example, `v2.0.0-alpha.2`) publishes a GitHub Release only after all checks, tests, and builds succeed. Releases include platform-specific `.tar.gz` archives and `SHA256SUMS`. Tags containing a prerelease suffix, such as `-alpha.1`, `-beta.1`, or `-rc.1`, are marked as prereleases rather than the latest stable release. This workflow does not publish to npm or crates.io.
+Pushing a version tag matching `Cargo.toml` (for example, `v2.0.0-alpha.3`) publishes a GitHub Release only after all checks, tests, and builds succeed. Releases include platform-specific `.tar.gz` archives and `SHA256SUMS`. Tags containing a prerelease suffix, such as `-alpha.1`, `-beta.1`, or `-rc.1`, are marked as prereleases rather than the latest stable release. This workflow does not publish to npm or crates.io.
 
 ## ⚠️ Limitations
 

@@ -49,6 +49,42 @@ impl Fixture {
     }
 }
 #[test]
+fn status_messages_use_legacy_wording_without_coloring_captured_output() {
+    for (config, expected) in [
+        (json!({}), "No secrets injected\n"),
+        (
+            json!({"A":{"source":"manual","value":"a"}}),
+            "injected 1 secret\n",
+        ),
+        (
+            json!({"A":{"source":"manual","value":"a"},"B":{"source":"manual","value":"b"}}),
+            "injected 2 secrets\n",
+        ),
+    ] {
+        let f = Fixture::new(config);
+        for no_color in [false, true] {
+            let mut command = f.command();
+            if no_color {
+                command.env("NO_COLOR", "1");
+            } else {
+                command.env_remove("NO_COLOR");
+            }
+            command
+                .args(["/bin/sh", "-c", "printf command-output"])
+                .assert()
+                .success()
+                .stdout("command-output")
+                .stderr(expected);
+        }
+    }
+    let f = Fixture::new(json!({"BAD":{"source":"missing","value":"not-a-secret"}}));
+    f.command()
+        .args(["/bin/sh", "-c", "exit 0"])
+        .assert()
+        .success()
+        .stderr("⚠️  psst: BAD: Unknown source \"missing\"\nNo secrets injected\n");
+}
+#[test]
 fn overlay_partial_failures_argv_and_exit() {
     let f = Fixture::new(json!({
         "OK": {"source":"manual", "value":"literal $() ' \""},
@@ -230,7 +266,8 @@ fn clipboard_preserves_literal_bytes_without_executing() {
         .args(["--copy", "KEY"])
         .assert()
         .success()
-        .stdout("");
+        .stdout("")
+        .stderr("📋 Secret KEY copied to clipboard\n");
     assert_eq!(fs::read_to_string(capture).unwrap(), secret);
     assert!(!f.temp.path().join("BAD").exists());
     f.command().args(["--copy", "MISSING"]).assert().failure();
@@ -247,7 +284,8 @@ fn export_is_private_ordered_and_escaped() {
         .arg("--write")
         .assert()
         .success()
-        .stdout("");
+        .stdout("")
+        .stderr("Created .env (plaintext, permissions 0600)\n");
     let path = caller.join(".env");
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("A=\"a\\n\\\"b\\\\c"));
@@ -271,7 +309,7 @@ fn help_version_and_downstream_options() {
         .arg("--version")
         .assert()
         .success()
-        .stdout("psst 2.0.0-alpha.2\n");
+        .stdout("psst 2.0.0-alpha.3\n");
     f.script("capture", "printf '%s|%s|%s' \"$1\" \"$2\" \"$3\"");
     f.command()
         .args(["capture", "--copy", "--write", "--help"])
@@ -282,7 +320,7 @@ fn help_version_and_downstream_options() {
         .args(["--version", "--copy"])
         .assert()
         .success()
-        .stdout("psst 2.0.0-alpha.2\n");
+        .stdout("psst 2.0.0-alpha.3\n");
     f.command().arg("--copy").assert().failure();
     f.command().assert().failure(); // non-terminal UI fails clearly instead of hanging
 }

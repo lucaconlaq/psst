@@ -6,12 +6,14 @@ use psst::{
 };
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
+mod console;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
         Ok(code) => ExitCode::from(code),
         Err(e) => {
-            eprintln!("psst: {e:#}");
+            console::error(format_args!("psst: {e:#}"));
             ExitCode::FAILURE
         }
     }
@@ -46,25 +48,29 @@ async fn run() -> Result<u8> {
                 .with_context(|| format!("Secret {name:?} not found"))?;
             let value = providers::fetch(entry, config.dir()).await?;
             operations::copy(&value).await?;
-            eprintln!("Copied {name} to clipboard");
+            console::info(format_args!("📋 Secret {name} copied to clipboard"));
             return Ok(0);
         }
         let results = providers::all(&config.entries, config.dir()).await;
         for (name, result) in &results {
             if let Err(e) = result {
-                eprintln!("psst: {name}: {e}");
+                console::warn(format_args!("psst: {name}: {e}"));
             }
         }
         if args.write {
             operations::write_env(&cwd.join(".env"), &results)?;
-            eprintln!("Created .env (plaintext, permissions 0600)");
+            console::info(format_args!("Created .env (plaintext, permissions 0600)"));
             return Ok(0);
         }
         let count = results.iter().filter(|(_, r)| r.is_ok()).count();
-        eprintln!(
-            "Injected {count} secret{}",
-            if count == 1 { "" } else { "s" }
-        );
+        if count == 0 {
+            console::info(format_args!("No secrets injected"));
+        } else {
+            console::info(format_args!(
+                "injected {count} secret{}",
+                if count == 1 { "" } else { "s" }
+            ));
+        }
         launch(args.command, results)
     };
     #[cfg(unix)]
