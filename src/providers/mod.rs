@@ -38,8 +38,26 @@ pub trait Author: Sync {
     fn identities(&self) -> BoxFuture<'_, Result<Vec<Identity>>>;
     /// Validate and load the selected record before requesting replacement consent.
     fn prepare(&self, dir: &Path, id: &str, key: &Identity) -> Result<Box<dyn PreparedSave>>;
+    /// Select one loaded ciphertext snapshot without decrypting it.
+    fn prepare_deletion(
+        &self,
+        dir: &Path,
+        reference: &str,
+    ) -> BoxFuture<'static, Result<Box<dyn PreparedDelete>>>;
+    /// Conservative shared-reference warning, limited to loaded configuration.
+    fn may_share(&self, left: &str, right: &str) -> bool;
     /// Maximum exact UTF-8 value bytes accepted by this author.
     fn value_limit(&self) -> usize;
+}
+
+/// Identity-selected ciphertext snapshot.
+/// Removal must follow configuration save.
+pub trait PreparedDelete: Send {
+    /// Remove only this record, rejecting changes since selection.
+    fn remove(
+        &mut self,
+        boundary: &mut dyn FnMut(crate::config::WriteBoundary) -> Result<()>,
+    ) -> Result<()>;
 }
 
 /// A loaded record snapshot. Implementations must reject concurrent changes.

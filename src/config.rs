@@ -199,11 +199,16 @@ impl std::error::Error for PersistenceError {
     }
 }
 
+/// Persistence observation points for provider mutation fault-injection seams.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WriteBoundary {
+pub enum WriteBoundary {
+    /// Before writing the temporary file.
     Write,
+    /// Before syncing the temporary file.
     FileSync,
+    /// Before replacing the destination.
     Replace,
+    /// After replacement, before syncing its directory.
     DirectorySync,
 }
 

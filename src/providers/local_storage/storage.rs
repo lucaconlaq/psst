@@ -100,6 +100,14 @@ impl StoredKey {
     /// Remove only the selected ID; retain the per-key file even when empty.
     /// Missing IDs/files are a no-op. Call only after configuration deletion.
     pub fn remove(&mut self, id: &str) -> Result<()> {
+        self.remove_checked(id, |_| Ok(()))
+    }
+
+    pub(crate) fn remove_checked(
+        &mut self,
+        id: &str,
+        boundary: impl FnMut(WriteBoundary) -> Result<()>,
+    ) -> Result<()> {
         validate_id(id)?;
         let _lock = self.lock()?;
         let mut next = self.file.clone();
@@ -107,7 +115,7 @@ impl StoredKey {
         if next.records.len() == self.file.records.len() {
             return Ok(());
         }
-        self.commit(next, |_| Ok(()))
+        self.commit(next, boundary)
     }
 
     fn lock(&self) -> Result<File> {

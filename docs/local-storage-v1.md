@@ -2,7 +2,7 @@
 
 The agent/envelope library introduced in ticket 01 now supports the registered
 provider, config-relative persistence, runtime resolution, and masked TUI creation,
-reuse, and updates.
+reuse, updates, and optional ciphertext deletion.
 There is no storage-management CLI. No real integration is advertised as
 tested: only the deterministic fake Unix agent has been exercised. Independent
 crypto/format review and consented Linux/macOS 1Password checks remain outstanding.
@@ -56,8 +56,30 @@ failures report changed files with uncertain durability, not rollback. `Esc`
 cancels unfinished work and discards the zeroizing draft; already completed writes
 are not undone. Late completed storage results never save an old draft's reference
 into a new draft. Reopen the configuration after external edits; retained unused
-records are not automatically cleaned up. Encrypted deletion remains later ticket
-scope.
+records are not automatically cleaned up.
+
+## TUI deletion (experimental)
+
+Press `d` or `Delete` on an entry. For `local-storage`, ciphertext is kept by
+default; `r` toggles optional record removal, then `Enter`/`y` confirms.
+`Esc`/`n` cancels. Warnings cover possible shared references in the loaded
+configuration only, not repository-wide discovery. Optional removal lists eligible
+agent identities under one `PSST_TIMEOUT` budget, without signing or decrypting.
+A qualified reference restricts selection to its loaded fingerprint; an
+unqualified reference requires exactly one loaded key with this ID. Missing,
+ambiguous, or invalid identity/storage keeps ciphertext while removing the mapping.
+
+Configuration is persisted first. Configuration failure before replacement leaves
+both artifacts unchanged; a config sync failure after replacement reports the
+removed mapping and uncertain durability, conservatively keeping ciphertext.
+Storage deletion uses the selected loaded snapshot, private permissions, per-key
+locking, symlink refusal, strict validation, and conflict detection. A failed
+storage write keeps ciphertext unless replacement already completed, in which
+case its removal and uncertain durability are reported. Other IDs and users are
+preserved; the selected file remains even when empty. References still pointing to
+removed ciphertext fail safely. There is no cross-file rollback or orphan cleanup.
+Cancellation during identity selection leaves both artifacts unchanged; late
+selection results cannot delete a cancelled mapping.
 
 An unqualified reference requires exactly one loaded eligible key with that ID;
 other IDs do not count. A selector restricts resolution to that fingerprint.

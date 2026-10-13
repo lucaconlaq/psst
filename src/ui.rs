@@ -246,6 +246,11 @@ enum View {
     Help,
 }
 enum Message {
+    Deletion {
+        generation: u64,
+        name: String,
+        result: Result<Box<dyn providers::PreparedDelete>>,
+    },
     Identities {
         generation: u64,
         result: Result<Vec<providers::Identity>>,
@@ -284,6 +289,8 @@ struct App {
     query: String,
     searching: bool,
     delete: Option<String>,
+    delete_remove: bool,
+    delete_busy: bool,
     revealed: HashMap<String, (Zeroizing<String>, Instant)>,
     loading: HashSet<String>,
     status: String,
@@ -303,6 +310,8 @@ impl App {
             query: String::new(),
             searching: false,
             delete: None,
+            delete_remove: false,
+            delete_busy: false,
             revealed: HashMap::new(),
             loading: HashSet::new(),
             status: "Secrets stay masked until you ask. Fetches run in parallel.".into(),
@@ -553,6 +562,57 @@ impl App {
             }),
         );
     }
+    fn delete_mapping(
+        &mut self,
+        name: &str,
+        removal: Option<Result<Box<dyn providers::PreparedDelete>>>,
+        config_boundary: impl FnMut(crate::config::WriteBoundary) -> Result<()>,
+        mut storage_boundary: impl FnMut(crate::config::WriteBoundary) -> Result<()>,
+    ) {
+        let encrypted =
+            providers::get(&self.config.entries[name].source).is_some_and(|p| p.author().is_some());
+        let mut entries = self.config.entries.clone();
+        entries.shift_remove(name);
+        let result = self.config.save_checked(entries, config_boundary);
+        let changed = result.as_ref().err().is_some_and(|error| {
+            error
+                .downcast_ref::<crate::config::PersistenceError>()
+                .is_some_and(|e| e.changed)
+        });
+        self.delete = None;
+        self.delete_busy = false;
+        self.delete_remove = false;
+        if let Err(error) = result {
+            if changed {
+                self.main();
+                self.status(
+                    format!(
+                        "Mapping removed; config durability uncertain; ciphertext kept: {error}"
+                    ),
+                    true,
+                );
+            } else {
+                self.status(
+                    format!("Configuration unchanged; ciphertext kept: {error}"),
+                    true,
+                );
+            }
+            // Even after replacement, keep ciphertext on uncertain config durability.
+            return;
+        }
+        self.main();
+        match removal {
+            None => self.status(if encrypted { format!("Deleted {name}; ciphertext kept.") } else { format!("Deleted {name}.") }, false),
+            Some(Err(error)) => self.status(format!("Mapping removed; ciphertext kept: {error}"), true),
+            Some(Ok(mut selected)) => match selected.remove(&mut storage_boundary) {
+                Ok(()) => self.status("Mapping and selected ciphertext removed. Other loaded references to it will fail safely.", false),
+                Err(error) => {
+                    let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
+                    self.status(format!("Mapping removed; ciphertext {}: {error}", if changed { "removed but storage durability uncertain" } else { "kept" }), true);
+                }
+            },
+        }
+    }
     fn message(&mut self, msg: Message) {
         self.message_checked(msg, |_| Ok(()));
     }
@@ -562,6 +622,16 @@ impl App {
         boundary: impl FnMut(crate::config::WriteBoundary) -> Result<()>,
     ) {
         match msg {
+            Message::Deletion {
+                generation,
+                name,
+                result,
+            } if generation == self.generation
+                && self.delete_busy
+                && self.delete.as_deref() == Some(&name) =>
+            {
+                self.delete_mapping(&name, Some(result), boundary, |_| Ok(()));
+            }
             Message::Identities { generation, result } if generation == self.generation => {
                 if let View::Create(c) = &mut self.view {
                     c.busy = false;
@@ -704,23 +774,50 @@ impl App {
             return false;
         }
         if let Some(name) = self.delete.clone() {
+            let entry = &self.config.entries[&name];
+            let author = providers::get(&entry.source).and_then(|p| p.author());
             match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    let mut entries = self.config.entries.clone();
-                    entries.shift_remove(&name);
-                    match self.config.save(entries) {
-                        Ok(()) => {
-                            self.delete = None;
-                            self.main();
-                            self.status(format!("Deleted {name}."), false);
-                        }
-                        Err(e) => {
-                            self.delete = None;
-                            self.status(e.to_string(), true);
-                        }
+                KeyCode::Char('r') if author.is_some() && !self.delete_busy => {
+                    self.delete_remove = !self.delete_remove;
+                }
+                KeyCode::Char('y') | KeyCode::Enter if !self.delete_busy => {
+                    if self.delete_remove
+                        && let Some(author) = author
+                    {
+                        let work = author.prepare_deletion(self.config.dir(), &entry.value);
+                        self.invalidate();
+                        self.delete_busy = true;
+                        let generation = self.generation;
+                        let tx = tx.clone();
+                        self.status(
+                            "Selecting ciphertext identity… Esc cancels before persistence.",
+                            false,
+                        );
+                        tasks.push(
+                            generation,
+                            tokio::spawn(async move {
+                                let result = work.await;
+                                let _ = tx.send(Message::Deletion {
+                                    generation,
+                                    name,
+                                    result,
+                                });
+                            }),
+                        );
+                    } else {
+                        self.delete_mapping(&name, None, |_| Ok(()), |_| Ok(()));
                     }
                 }
-                KeyCode::Char('n') | KeyCode::Esc => self.delete = None,
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.delete = None;
+                    self.delete_remove = false;
+                    self.delete_busy = false;
+                    self.invalidate();
+                    self.status(
+                        "Deletion cancelled; configuration and ciphertext unchanged.",
+                        false,
+                    );
+                }
                 _ => {}
             }
             return false;
@@ -1017,7 +1114,11 @@ impl App {
                     );
                 }
             }
-            KeyCode::Delete | KeyCode::Char('d') => self.delete = self.selected_name(),
+            KeyCode::Delete | KeyCode::Char('d') => {
+                self.delete = self.selected_name();
+                self.delete_remove = false;
+                self.delete_busy = false;
+            }
             KeyCode::Char(' ') => {
                 if let Some(name) = self.selected_name()
                     && self.revealed.remove(&name).is_none()
@@ -1538,9 +1639,50 @@ fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
     if let Some(name) = &app.delete {
-        let popup = centered(area, 60, 7);
+        let popup = centered(area, 78, 11);
         frame.render_widget(Clear, popup);
-        frame.render_widget(Paragraph::new(format!("Delete {name}?\n\nThis removes the reference from this config.\nEnter / y delete · Esc / n cancel")).block(block(" Confirm deletion ").border_style(Style::default().fg(Color::LightRed))).wrap(Wrap { trim: false }), popup);
+        // Reserve one clipped line for the name, not space needed for consent.
+        let name_limit = usize::from(popup.width.saturating_sub(13));
+        let mut shown_name: String = clean(name).chars().take(name_limit).collect();
+        if name.chars().count() > name_limit {
+            shown_name.push('…');
+        }
+        let entry = &app.config.entries[name];
+        let author = providers::get(&entry.source).and_then(|p| p.author());
+        let options = if let Some(author) = author {
+            let shared = app.config.entries.iter().any(|(other, value)| {
+                other != name
+                    && value.source == entry.source
+                    && author.may_share(&entry.value, &value.value)
+            });
+            format!(
+                "\nCiphertext: {}\nr toggles ciphertext removal\n{}{}",
+                if app.delete_remove {
+                    "REMOVE selected record"
+                } else {
+                    "KEEP (default)"
+                },
+                if shared {
+                    "Known shared references in loaded config\nmay be affected.\n"
+                } else {
+                    ""
+                },
+                if app.delete_busy {
+                    "Selecting identity… Esc cancels.\n"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            String::new()
+        };
+        frame.render_widget(
+            Paragraph::new(format!(
+                "Delete {shown_name}?\nRemoves reference from this config.{options}\nEnter / y delete · Esc / n cancel"
+            ))
+            .block(block(" Confirm deletion ").border_style(Style::default().fg(Color::LightRed))),
+            popup,
+        );
     }
     if app.error_panel {
         let popup = centered(
@@ -1659,7 +1801,7 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     fn app() -> App {
-        let t = tempfile::tempdir().unwrap().keep();
+        let t = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
         App::new(Config::load(t.join(".psst.json")).unwrap())
     }
     fn key(app: &mut App, code: KeyCode) {
@@ -1670,6 +1812,269 @@ mod tests {
             &mut Tasks(vec![]),
         );
     }
+    struct TestDeletion(crate::providers::local_storage::StoredKey);
+    impl providers::PreparedDelete for TestDeletion {
+        fn remove(
+            &mut self,
+            boundary: &mut dyn FnMut(crate::config::WriteBoundary) -> Result<()>,
+        ) -> Result<()> {
+            self.0.remove_checked("fixture", boundary)
+        }
+    }
+
+    fn deletion_fixture() -> (App, std::path::PathBuf, Box<dyn providers::PreparedDelete>) {
+        use crate::providers::local_storage::{KeyFile, PublicKey, StoredKey};
+        use data_encoding::BASE64;
+        use std::os::unix::fs::PermissionsExt;
+        let mut app = app();
+        let bytes = include_bytes!("../tests/fixtures/local-storage-v1.json");
+        let document: KeyFile = serde_json::from_slice(bytes).unwrap();
+        let key =
+            PublicKey::from_blob(&BASE64.decode(document.public_key.as_bytes()).unwrap()).unwrap();
+        let dir = app.config.dir().join(".psst/local-storage");
+        std::fs::create_dir_all(&dir).unwrap();
+        for path in [dir.parent().unwrap(), &dir] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = dir.join(key.filename());
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let id = document.records[0].id.clone();
+        assert_eq!(id, "fixture");
+        let entry = Entry {
+            source: "local-storage".into(),
+            value: id,
+        };
+        app.config
+            .save(
+                [("FIRST".into(), entry.clone()), ("SHARED".into(), entry)]
+                    .into_iter()
+                    .collect(),
+            )
+            .unwrap();
+        let stored = StoredKey::load(app.config.dir(), key).unwrap();
+        (app, path, Box::new(TestDeletion(stored)))
+    }
+
+    #[test]
+    fn deletion_persistence_boundaries_report_actual_surviving_files_and_order() {
+        use crate::config::WriteBoundary;
+        let stages = [
+            WriteBoundary::Write,
+            WriteBoundary::FileSync,
+            WriteBoundary::Replace,
+            WriteBoundary::DirectorySync,
+        ];
+        for config_failure in [None].into_iter().chain(stages.into_iter().map(Some)) {
+            for storage_failure in [None].into_iter().chain(stages.into_iter().map(Some)) {
+                let (mut app, path, selected) = deletion_fixture();
+                let before = std::fs::read(&path).unwrap();
+                let config_path = app.config.path.clone();
+                let mut storage_called = false;
+                app.delete_mapping(
+                    "FIRST",
+                    Some(Ok(selected)),
+                    |stage| {
+                        anyhow::ensure!(Some(stage) != config_failure, "Injected config failure");
+                        Ok(())
+                    },
+                    |stage| {
+                        storage_called = true;
+                        assert!(
+                            !Config::load(config_path.clone())
+                                .unwrap()
+                                .entries
+                                .contains_key("FIRST")
+                        );
+                        anyhow::ensure!(Some(stage) != storage_failure, "Injected storage failure");
+                        Ok(())
+                    },
+                );
+                let config_changed = config_failure.is_none()
+                    || config_failure == Some(WriteBoundary::DirectorySync);
+                let storage_changed = config_failure.is_none()
+                    && (storage_failure.is_none()
+                        || storage_failure == Some(WriteBoundary::DirectorySync));
+                assert_eq!(
+                    !Config::load(app.config.path.clone())
+                        .unwrap()
+                        .entries
+                        .contains_key("FIRST"),
+                    config_changed
+                );
+                assert_eq!(std::fs::read(&path).unwrap() != before, storage_changed);
+                assert_eq!(storage_called, config_failure.is_none());
+                assert!(app.config.entries.contains_key("SHARED"));
+                assert!(
+                    app.status
+                        .contains(if storage_changed { "removed" } else { "kept" })
+                );
+                if config_failure == Some(WriteBoundary::DirectorySync)
+                    || (config_failure.is_none()
+                        && storage_failure == Some(WriteBoundary::DirectorySync))
+                {
+                    assert!(app.status.contains("durability uncertain"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deletion_conflicts_locks_and_swapped_symlinks_keep_ciphertext() {
+        use fs2::FileExt;
+        for failure in [
+            "config_conflict",
+            "config_lock",
+            "storage_conflict",
+            "storage_lock",
+            "storage_symlink",
+        ] {
+            let (mut app, path, selected) = deletion_fixture();
+            let before = std::fs::read(&path).unwrap();
+            let mut lock = None;
+            match failure {
+                "config_conflict" => {
+                    let mut bytes = std::fs::read(&app.config.path).unwrap();
+                    bytes.push(b' ');
+                    std::fs::write(&app.config.path, bytes).unwrap();
+                }
+                "storage_conflict" => {
+                    let mut bytes = before.clone();
+                    bytes.push(b' ');
+                    std::fs::write(&path, bytes).unwrap();
+                }
+                "storage_symlink" => {
+                    std::fs::rename(&path, path.with_extension("original")).unwrap();
+                    std::os::unix::fs::symlink(path.with_extension("original"), &path).unwrap();
+                }
+                _ => {
+                    let lock_path = if failure == "config_lock" {
+                        app.config.path.with_extension("psst-lock")
+                    } else {
+                        path.with_extension("lock")
+                    };
+                    let file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .read(true)
+                        .write(true)
+                        .open(lock_path)
+                        .unwrap();
+                    file.lock_exclusive().unwrap();
+                    lock = Some(file);
+                }
+            }
+            let config_before = std::fs::read(&app.config.path).unwrap();
+            let storage_before = std::fs::read(&path).unwrap();
+            app.delete_mapping("FIRST", Some(Ok(selected)), |_| Ok(()), |_| Ok(()));
+            assert!(
+                app.error && app.status.contains("ciphertext kept"),
+                "{}",
+                app.status
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), storage_before);
+            if failure.starts_with("config") {
+                assert_eq!(std::fs::read(&app.config.path).unwrap(), config_before);
+                assert!(app.status.contains("Configuration unchanged"));
+            } else {
+                assert!(
+                    !Config::load(app.config.path.clone())
+                        .unwrap()
+                        .entries
+                        .contains_key("FIRST")
+                );
+                assert!(app.status.contains("Mapping removed"));
+            }
+            drop(lock);
+        }
+    }
+
+    #[test]
+    fn deletion_default_cancel_unresolved_and_stale_results_are_safe() {
+        let (mut app, path, selected) = deletion_fixture();
+        let before = std::fs::read(&path).unwrap();
+        key(&mut app, KeyCode::Char('d'));
+        assert!(screen(&mut app).contains("KEEP (default)"));
+        assert!(screen(&mut app).contains("Known shared references"));
+        key(&mut app, KeyCode::Char('r'));
+        assert!(app.delete_remove);
+        key(&mut app, KeyCode::Esc);
+        assert!(app.config.entries.contains_key("FIRST"));
+        app.message(Message::Deletion {
+            generation: app.generation - 1,
+            name: "FIRST".into(),
+            result: Ok(selected),
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        key(&mut app, KeyCode::Char('d'));
+        key(&mut app, KeyCode::Enter);
+        assert!(!app.config.entries.contains_key("FIRST"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        app.delete_mapping(
+            "SHARED",
+            Some(Err(anyhow::anyhow!("Ambiguous identity"))),
+            |_| Ok(()),
+            |_| panic!("Must keep ciphertext"),
+        );
+        assert!(app.status.contains("Mapping removed; ciphertext kept"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        key(&mut app, KeyCode::Char('a'));
+        assert!(matches!(app.view, View::Editor(_)));
+    }
+
+    #[test]
+    fn deletion_long_name_reserves_consent_at_supported_sizes() {
+        let (mut app, path, _) = deletion_fixture();
+        let before = std::fs::read(&path).unwrap();
+        let name = "X".repeat(1000);
+        let entry = app.config.entries.shift_remove("FIRST").unwrap();
+        app.config.entries.insert(name.clone(), entry);
+        app.delete = Some(name.clone());
+        for (width, height) in [(78, 11), (45, 12), (120, 30)] {
+            // 78×11 describes the popup; the terminal minimum height is 12.
+            let mut terminal = Terminal::new(TestBackend::new(width, height.max(12))).unwrap();
+            for remove in [false, true] {
+                for busy in [false, true] {
+                    app.delete_remove = remove;
+                    app.delete_busy = busy;
+                    terminal.draw(|f| draw(f, &mut app)).unwrap();
+                    let text = terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect::<String>();
+                    for expected in [
+                        "…?",
+                        "Removes reference from this config.",
+                        if remove {
+                            "REMOVE selected record"
+                        } else {
+                            "KEEP (default)"
+                        },
+                        "r toggles ciphertext removal",
+                        "Known shared references in loaded config",
+                        "may be affected.",
+                        "Enter / y delete · Esc / n cancel",
+                    ] {
+                        assert!(
+                            text.contains(expected),
+                            "{width}×{height}: missing {expected}: {text}"
+                        );
+                    }
+                    if busy {
+                        assert!(text.contains("Selecting identity… Esc cancels."));
+                    }
+                }
+            }
+        }
+        app.delete_busy = false;
+        key(&mut app, KeyCode::Esc);
+        assert!(app.config.entries.contains_key(&name));
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
     #[test]
     fn empty_actions_and_draft_cancel() {
         let mut app = app();

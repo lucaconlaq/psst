@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
-use super::{Author, FetchFuture, Identity, PreparedSave, Provider};
+use super::{Author, FetchFuture, Identity, PreparedDelete, PreparedSave, Provider};
 
 pub use agent::Agent;
 pub use storage::StoredKey;
@@ -89,8 +89,68 @@ impl Author for LocalStorage {
         }))
     }
 
+    fn prepare_deletion(
+        &self,
+        dir: &Path,
+        value: &str,
+    ) -> BoxFuture<'static, Result<Box<dyn PreparedDelete>>> {
+        let dir = dir.to_owned();
+        let value = value.to_owned();
+        Box::pin(async move {
+            let (id, selector) = reference(&value)?;
+            let agent = Agent::from_env()?;
+            phase(async {
+                let keys = agent.identities().await?;
+                let mut selected = None;
+                for key in keys {
+                    if selector.is_some_and(|s| s != key.fingerprint()) {
+                        continue;
+                    }
+                    let stored = StoredKey::load(&dir, key)?;
+                    if stored.records().iter().any(|record| record.id == id) {
+                        ensure!(
+                            selected.is_none(),
+                            "Ambiguous local-storage identity for ID; ciphertext kept"
+                        );
+                        selected = Some(stored);
+                    }
+                }
+                let stored = selected
+                    .context("No loaded eligible key with a stored value; ciphertext kept")?;
+                Ok(Box::new(Deletion {
+                    id: id.to_owned(),
+                    stored,
+                }) as Box<dyn PreparedDelete>)
+            })
+            .await
+        })
+    }
+
+    fn may_share(&self, left: &str, right: &str) -> bool {
+        match (reference(left), reference(right)) {
+            (Ok((left, a)), Ok((right, b))) => {
+                left == right && (a.is_none() || b.is_none() || a == b)
+            }
+            _ => false,
+        }
+    }
+
     fn value_limit(&self) -> usize {
         VALUE_LIMIT
+    }
+}
+
+struct Deletion {
+    id: String,
+    stored: StoredKey,
+}
+
+impl PreparedDelete for Deletion {
+    fn remove(
+        &mut self,
+        boundary: &mut dyn FnMut(crate::config::WriteBoundary) -> Result<()>,
+    ) -> Result<()> {
+        self.stored.remove_checked(&self.id, boundary)
     }
 }
 

@@ -678,6 +678,160 @@ async fn encrypted_creation_chooser_selector_replacement_and_conflict() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_deletion_default_cancel_explicit_and_unresolved_restore_terminal() {
+    use psst::config::{Config, Entry};
+    use psst::providers::local_storage::{PublicKey, StoredKey};
+    let fake = support::agent::FakeAgent::with_seeds(&[7, 8]).await;
+    let other = PublicKey::from_blob(&fake.state.identities.lock().unwrap()[1]).unwrap();
+    for mode in [
+        "keep",
+        "cancel",
+        "remove",
+        "ambiguous",
+        "missing",
+        "malformed",
+        "timeout",
+        "busy_cancel",
+    ] {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let dir = tempfile::tempdir_in(root).unwrap();
+        for (key, id, value) in [
+            (&fake.key, "id", "FIRST_PRIVATE"),
+            (&fake.key, "unrelated", "KEEP_PRIVATE"),
+            (&other, "id", "OTHER_PRIVATE"),
+        ] {
+            StoredKey::load(dir.path(), key.clone())
+                .unwrap()
+                .set(&fake.client, id, value)
+                .await
+                .unwrap();
+        }
+        let path = dir.path().join("psst.json");
+        let value = if mode == "ambiguous" {
+            "id".into()
+        } else if mode == "missing" {
+            format!("missing#{}", fake.key.fingerprint())
+        } else {
+            format!("id#{}", fake.key.fingerprint())
+        };
+        let entry = |value| Entry {
+            source: "local-storage".into(),
+            value,
+        };
+        Config::load(path.clone())
+            .unwrap()
+            .save(
+                [
+                    ("FIRST".into(), entry(value.clone())),
+                    ("SHARED".into(), entry(value)),
+                    ("OTHER".into(), entry(format!("id#{}", other.fingerprint()))),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unwrap();
+        let file = dir
+            .path()
+            .join(".psst/local-storage")
+            .join(fake.key.filename());
+        let other_file = file.with_file_name(other.filename());
+        if mode == "malformed" {
+            fs::write(&file, b"{}").unwrap();
+        }
+        let before = fs::read(&file).unwrap();
+        let other_before = fs::read(&other_file).unwrap();
+        let mut pty = Pty::start_with_timeout(&path, None, Some(&fake.socket()), 1);
+        pty.wait_text("FIRST");
+        pty.send(b"d");
+        pty.wait_text("KEEP (default)");
+        pty.wait_text("Known shared references");
+        if matches!(mode, "timeout" | "busy_cancel") {
+            // A timed-out socket may close before consuming its release permit.
+            while let Ok(permit) = fake.state.listing_gate.try_acquire() {
+                permit.forget();
+            }
+            fake.state
+                .delay_listing
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        if mode == "cancel" {
+            pty.send(b"r\x1b");
+            pty.wait_text("Deletion cancelled");
+            assert!(
+                Config::load(path.clone())
+                    .unwrap()
+                    .entries
+                    .contains_key("FIRST")
+            );
+        } else {
+            if mode != "keep" {
+                pty.send(b"r");
+                pty.wait_text("REMOVE selected record");
+            }
+            pty.send(b"\r");
+            if mode == "busy_cancel" {
+                pty.wait_text("Selecting identity");
+                pty.send(b"\x1b");
+                pty.wait_text("Deletion cancelled");
+                assert!(
+                    Config::load(path.clone())
+                        .unwrap()
+                        .entries
+                        .contains_key("FIRST")
+                );
+            } else {
+                pty.wait_text(if mode == "remove" {
+                    "Mapping and selected ciphertext removed"
+                } else if mode == "keep" {
+                    "ciphertext kept"
+                } else {
+                    "Mapping removed; ciphertext kept"
+                });
+                assert!(
+                    !Config::load(path.clone())
+                        .unwrap()
+                        .entries
+                        .contains_key("FIRST")
+                );
+            }
+        }
+        if matches!(mode, "timeout" | "busy_cancel") {
+            fake.state
+                .delay_listing
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            fake.state.listing_gate.add_permits(1);
+        }
+        if mode == "remove" {
+            let stored = StoredKey::load(dir.path(), fake.key.clone()).unwrap();
+            assert_eq!(stored.records().len(), 1);
+            assert_eq!(stored.records()[0].id, "unrelated");
+            pty.send(b" "); // Remaining shared mapping fails safely.
+            pty.wait_text("No loaded eligible key");
+        } else {
+            assert_eq!(fs::read(&file).unwrap(), before);
+        }
+        assert_eq!(fs::read(&other_file).unwrap(), other_before);
+        let record = StoredKey::load(dir.path(), other.clone())
+            .unwrap()
+            .records()[0]
+            .clone();
+        assert_eq!(
+            &**record.decrypt(&fake.client, &other, "id").await.unwrap(),
+            "OTHER_PRIVATE"
+        );
+        pty.send(b"a");
+        pty.wait_text("Environment name");
+        pty.send(b"\x03");
+        pty.finish();
+        assert!(
+            !pty.history.contains("FIRST_PRIVATE")
+                && !pty.history.contains("KEEP_PRIVATE")
+                && !pty.history.contains("OTHER_PRIVATE")
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_reuse_and_shared_update_preserve_ciphertext_and_other_users() {
     use psst::config::{Config, Entry};
     use psst::providers::local_storage::{PublicKey, StoredKey};
