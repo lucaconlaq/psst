@@ -1,17 +1,11 @@
 ---
-name: conventional-commit
-description: Create a git commit using the Conventional Commits format. Use when the user asks to commit staged files, stage a meaningful set of changes for commit, generate a commit message, or make and optionally push a conventional commit.
+name: commit
+description: Create a git commit using the Conventional Commits format. Use when the user asks to commit changes, optionally pushing only when explicitly requested.
 ---
 
-# Conventional Commit
+# Commit
 
-Create a git commit using the Conventional Commits format.
-
-Prefer committing currently staged files only.
-If nothing is staged, inspect the working tree, select a cohesive meaningful change, stage it, and prepare a proposed commit without asking for separate staging confirmation.
-Include new files when they are clearly part of the selected change, but never stage unrelated changes merely because they are present.
-If no coherent staging choice can be made safely, ask the user to choose between the plausible groups.
-Always ask for confirmation before committing.
+Use this skill only when the user wants to create a commit, not merely draft a commit message. Follow the workflow below using Conventional Commits.
 
 ## Context to inspect
 
@@ -26,8 +20,6 @@ git diff --cached
 git log --oneline -10
 ```
 
-Use the staged diff when deciding what to commit if staged changes exist.
-If nothing is staged, inspect unstaged changes to select and stage a cohesive commit.
 Use recent commits only as style reference.
 
 ## Conventional Commits format
@@ -61,8 +53,7 @@ Allowed types:
 4. Do not infer or invent scopes automatically.
 5. Description must be concise and imperative, for example `add`, not `added`.
 6. Add a body only when useful for explaining context, motivation, or non-obvious changes.
-7. Add a footer only when needed, such as `BREAKING CHANGE:` or issue references.
-8. Never use `!` in the commit header, even for breaking changes. Describe compatibility changes in the body or footer when needed.
+7. Never use `!` in the commit header, even for breaking changes. Describe compatibility changes in the body or footer when needed.
 
 ## Workflow
 
@@ -85,8 +76,7 @@ Allowed types:
 9. If the user rejects the message, revise it or stop based on their feedback.
 10. If the user confirms, create the commit.
 11. Show the commit result.
-12. After a successful commit, ask whether the user wants to push.
-13. Push only if the user confirms.
+12. Push only when the user explicitly requests it. Do not prompt to push after committing.
 
 ## Commit command
 
@@ -103,15 +93,3 @@ git commit -m "type: description" -m "Body text." -m "Footer text."
 ```
 
 Run `git add` only for the cohesive change selected by this workflow. Never use `git add -A` when unrelated changes are present.
-
-After a successful commit, ask whether to push. If confirmed, use the current branch's configured upstream with:
-
-```bash
-git push
-```
-
-If there is no configured upstream, explain that and ask before using a command such as:
-
-```bash
-git push -u origin <current-branch>
-```

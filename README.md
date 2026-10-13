@@ -90,9 +90,13 @@ Terraform references use `directory#output_name`, with the directory relative to
 
 psst runs `terraform output -json` in that directory and selects the named output.
 
+## Glossary
+
+[docs/GLOSSARY.md](docs/GLOSSARY.md) defines the canonical domain vocabulary for code, documentation, and discussions. Keep definitions concise and update them when terminology is resolved.
+
 ## Adding providers
 
-Providers live in separate modules under `src/providers/`, with a shared interface for fetching, editor labels, and optional browsing. Registration is centralized in `src/providers/mod.rs`; adding a provider does not require changing the UI. See [the provider guide](docs/PROVIDERS.md).
+See [the architecture](docs/ARCHITECTURE.md) for provider implementation details.
 
 ## 🛠️ CI and releases
 
