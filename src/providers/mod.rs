@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 
 pub use op::totp;
 
+mod local_storage;
 mod manual;
 mod op;
 mod shell;
@@ -46,6 +47,7 @@ static PROVIDERS: &[&dyn Provider] = &[
     &shell::Shell,
     &manual::Manual,
     &terraform::Terraform,
+    &local_storage::LocalStorage,
 ];
 
 /// Find a registered provider by its exact persisted identifier.
@@ -77,11 +79,18 @@ pub async fn fetch(entry: &Entry, dir: &Path) -> Result<Zeroizing<String>> {
 /// Resolve all entries concurrently, preserving config order and individual errors.
 /// Provider subprocesses cannot depend on previously resolved secrets.
 pub async fn all(entries: &Entries, dir: &Path) -> Vec<(String, Result<Zeroizing<String>>)> {
-    join_all(
-        entries
-            .iter()
-            .map(|(name, entry)| async move { (name.clone(), fetch(entry, dir).await) }),
-    )
+    let operation = local_storage::Operation::default();
+    join_all(entries.iter().map(|(name, entry)| {
+        let operation = &operation;
+        async move {
+            let result = if entry.source == "local-storage" {
+                operation.fetch(&entry.value, dir).await
+            } else {
+                fetch(entry, dir).await
+            };
+            (name.clone(), result)
+        }
+    }))
     .await
 }
 fn scalar(value: &serde_json::Value) -> String {
@@ -110,9 +119,25 @@ mod tests {
         }
         assert_eq!(
             sources(),
-            ["op", "op 2FA", "vault", "shell", "manual", "terraform"]
+            [
+                "op",
+                "op 2FA",
+                "vault",
+                "shell",
+                "manual",
+                "terraform",
+                "local-storage"
+            ]
         );
         assert!(get("missing").is_none());
+        assert!(get("Local-storage").is_none());
+        let local = get("local-storage").unwrap();
+        assert!(!local.sensitive_reference());
+        assert!(local.browser().is_none());
+        assert_eq!(
+            local.reference_label(),
+            "Local storage · secret-id[#SHA256:fingerprint]"
+        );
         assert!(get("manual").unwrap().sensitive_reference());
         assert!(!get("shell").unwrap().sensitive_reference());
         for source in ["op", "op 2FA", "vault"] {
@@ -125,7 +150,7 @@ mod tests {
             get("vault").unwrap().reference_label(),
             "Vault (KV v2) · path#field · Ctrl+B browse"
         );
-        let terraform = PROVIDERS.last().unwrap();
+        let terraform = get("terraform").unwrap();
         assert_eq!(terraform.id(), "terraform");
         assert!(get("terraform").is_some());
         assert!(terraform.browser().is_none());

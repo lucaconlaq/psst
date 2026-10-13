@@ -7,6 +7,8 @@ pub mod browser;
 pub mod cli;
 /// Ordered configuration discovery, validation and atomic persistence.
 pub mod config;
+/// Experimental SSH-agent encryption and bounded v1 key-file encoding.
+pub mod local_storage;
 /// Literal clipboard transfer and dotenv export.
 pub mod operations;
 /// Bounded subprocess capture and cancellation cleanup.

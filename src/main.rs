@@ -57,6 +57,11 @@ async fn run() -> Result<u8> {
                 console::warn(format_args!("psst: {name}: {e}"));
             }
         }
+        for (name, result) in &results {
+            if config.entries[name].source == "local-storage" && result.is_err() {
+                anyhow::bail!("Local-storage resolution failed; operation stopped");
+            }
+        }
         if args.write {
             operations::write_env(&cwd.join(".env"), &results)?;
             console::info(format_args!("Created .env (plaintext, permissions 0600)"));

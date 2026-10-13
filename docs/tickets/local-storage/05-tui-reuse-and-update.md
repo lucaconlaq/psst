@@ -6,7 +6,7 @@
 
 **Blocked by:** 04 — Create encrypted secrets through the masked TUI
 
-**Status:** ready-for-agent
+**Status:** blocked
 
 - [ ] Reuse existing `(ID,key)` records when authoring mappings without duplicate records or ciphertext rewrites. Newly authored selectors remain omitted only when per-ID resolution is unambiguous; multiple loaded keys and users never cause silent value substitution.
 - [ ] Require explicit confirmation before replacement and warn that an update affects all references to that `(ID,key)`. Known-reference details are limited to the loaded config; do not claim repository-wide discovery.

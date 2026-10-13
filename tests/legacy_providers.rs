@@ -80,11 +80,12 @@ fn injected_op_shell_manual_and_partial_failure() {
     )
     .unwrap();
     let mut cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("psst"));
-    cmd.env("PSST_CONFIG", &config).env("PATH", dir.path()).env_remove("BAD_SECRET").args(["/bin/sh", "-c", "[ \"${BAD_SECRET+x}\" != x ] || exit 8; printf '%s|%s|%s' \"$OP_SECRET\" \"$SHELL_SECRET\" \"$MANUAL_SECRET\""]).assert().success().stdout("op://vault/item/field|shell-secret|manual-secret");
+    cmd.env_remove("SSH_AUTH_SOCK").env("PSST_CONFIG", &config).env("PATH", dir.path()).env_remove("BAD_SECRET").args(["/bin/sh", "-c", "[ \"${BAD_SECRET+x}\" != x ] || exit 8; printf '%s|%s|%s' \"$OP_SECRET\" \"$SHELL_SECRET\" \"$MANUAL_SECRET\""]).assert().success().stdout("op://vault/item/field|shell-secret|manual-secret");
     // Empty config overlays nothing and preserves the inherited environment.
     fs::write(&config, "{}").unwrap();
     let mut cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("psst"));
-    cmd.env("PSST_CONFIG", &config)
+    cmd.env_remove("SSH_AUTH_SOCK")
+        .env("PSST_CONFIG", &config)
         .env("UNCHANGED", "inherited")
         .args(["/bin/sh", "-c", "printf '%s' \"$UNCHANGED\""])
         .assert()
@@ -105,7 +106,8 @@ fn op_echo_read_argv_missing_executable_and_invalid_reference() {
     fs::write(&op, "#!/bin/sh\nprintf '%s' \"$*\"\n").unwrap();
     fs::set_permissions(&op, fs::Permissions::from_mode(0o700)).unwrap();
     let mut cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("psst"));
-    cmd.env("PSST_CONFIG", &config)
+    cmd.env_remove("SSH_AUTH_SOCK")
+        .env("PSST_CONFIG", &config)
         .env("PATH", dir.path())
         .args(["/bin/sh", "-c", "printf '%s' \"$SECRET\""])
         .assert()
@@ -114,6 +116,7 @@ fn op_echo_read_argv_missing_executable_and_invalid_reference() {
     fs::remove_file(op).unwrap();
     let mut cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("psst"));
     let result = cmd
+        .env_remove("SSH_AUTH_SOCK")
         .env("PSST_CONFIG", &config)
         .env("PATH", dir.path())
         .env_remove("SECRET")
@@ -128,6 +131,7 @@ fn op_echo_read_argv_missing_executable_and_invalid_reference() {
     .unwrap();
     let mut cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("psst"));
     let result = cmd
+        .env_remove("SSH_AUTH_SOCK")
         .env("PSST_CONFIG", &config)
         .env("PATH", dir.path())
         .env_remove("SECRET")

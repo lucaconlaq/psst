@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[allow(dead_code)]
+mod support;
+
 struct Pty {
     master: File,
     _slave: File,
@@ -21,6 +24,9 @@ struct Pty {
 }
 impl Pty {
     fn start(config: &Path, bin: Option<&Path>) -> Self {
+        Self::start_with_agent(config, bin, None)
+    }
+    fn start_with_agent(config: &Path, bin: Option<&Path>, socket: Option<&Path>) -> Self {
         let mut master = -1;
         let mut slave = -1;
         let mut size = libc::winsize {
@@ -53,11 +59,15 @@ impl Pty {
         let before = attrs(&master);
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("psst"));
         command
+            .env_remove("SSH_AUTH_SOCK")
             .env("PSST_CONFIG", config)
             .env("TERM", "xterm-256color")
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()));
+        if let Some(socket) = socket {
+            command.env("SSH_AUTH_SOCK", socket);
+        }
         if let Some(bin) = bin {
             command.env(
                 "PATH",
@@ -332,4 +342,89 @@ fn op_browser_search_selection_cancel_and_draft_save() {
     );
     pty.send(b"q");
     pty.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_storage_opt_in_errors_refetch_and_cancellation_restore_terminal() {
+    use psst::local_storage::{KeyFile, StoredKey};
+    use support::agent::{FakeAgent, Fault};
+
+    let fake = FakeAgent::new().await;
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(&root).unwrap();
+    let mut stored = StoredKey::load(dir.path(), fake.key.clone()).unwrap();
+    stored
+        .set(&fake.client, "id", "DELIBERATE_REVEAL_ONLY")
+        .await
+        .unwrap();
+    let config = dir.path().join("psst.json");
+    fs::write(
+        &config,
+        r#"{"KEY":{"source":"local-storage","value":"id"}}"#,
+    )
+    .unwrap();
+    let mut pty = Pty::start_with_agent(&config, None, Some(&fake.socket()));
+    pty.wait_text("KEY");
+    let before = fake.signs();
+    assert!(
+        !pty.parser
+            .screen()
+            .contents()
+            .contains("DELIBERATE_REVEAL_ONLY")
+    );
+    fake.fault(Fault::InvalidSignature);
+    pty.send(b" ");
+    pty.wait_text("Invalid SSH agent signature");
+    assert_eq!(fake.signs(), before + 1);
+    fake.fault(Fault::None);
+    for expected in [before + 2, before + 3] {
+        pty.send(b" ");
+        pty.wait_text("DELIBERATE_REVEAL_ONLY");
+        assert_eq!(fake.signs(), expected);
+        pty.send(b" ");
+        std::thread::sleep(Duration::from_millis(100));
+        pty.read();
+        assert!(
+            !pty.parser
+                .screen()
+                .contents()
+                .contains("DELIBERATE_REVEAL_ONLY")
+        );
+    }
+    // A cancelled fetch cannot reveal a late result, and exit restores the TTY.
+    fake.delay();
+    pty.send(b" ");
+    let start = Instant::now();
+    while fake.signs() < before + 4 {
+        pty.read();
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+    pty.send(b"\r");
+    pty.wait_text("Environment name");
+    fake.release();
+    std::thread::sleep(Duration::from_millis(100));
+    pty.read();
+    assert!(
+        !pty.parser
+            .screen()
+            .contents()
+            .contains("DELIBERATE_REVEAL_ONLY")
+    );
+    pty.send(b"\x1b");
+    pty.wait_text("KEY");
+    pty.send(b"q");
+    pty.finish();
+    let file = fs::read(
+        dir.path()
+            .join(".psst/local-storage")
+            .join(fake.key.filename()),
+    )
+    .unwrap();
+    assert_eq!(
+        KeyFile::parse(&file, &fake.key, &fake.key.filename())
+            .unwrap()
+            .records
+            .len(),
+        1
+    );
 }

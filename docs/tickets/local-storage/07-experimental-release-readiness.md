@@ -6,7 +6,7 @@
 
 **Blocked by:** 03 — Resolve encrypted references safely across runtime consumers; 05 — Reuse and update encrypted records through the TUI; 06 — Delete mappings with optional, identity-safe ciphertext removal
 
-**Status:** ready-for-agent
+**Status:** blocked
 
 - [ ] Document setup using an Ed25519 SSH Key item held by 1Password and Unix `SSH_AUTH_SOCK`; explain references, fingerprints, per-ID selection, configuration-relative `.psst/local-storage/`, metadata visibility, commit-safe ciphertext, private local permissions, input/file limits, TUI create/reuse/update/delete, and fail-stop command/export behavior. Only advertise integrations actually verified; allow compatible agents without vendor detection.
 - [ ] Publish the implemented v1 format/challenge/authenticated-metadata encoding, hash-safe filenames, dependency rationale and compatibility/security checks, fresh-write randomness, validation rules, operation-local deduplication, serialized signing, and `PSST_TIMEOUT` queue-inclusive phase semantics. Update provider extension documentation to reflect the implemented interfaces without inventing an agreed public API.

@@ -69,6 +69,7 @@ fn child_receives_native_argv_stdin_and_overridden_path() {
     let arg = OsString::from_vec(vec![b'x', 0xff, b'y']);
     let mut command = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("psst"));
     command
+        .env_remove("SSH_AUTH_SOCK")
         .env("PSST_CONFIG", config)
         .arg("fixture-child")
         .arg(arg)
