@@ -2,7 +2,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, openSync, closeSync, writeSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 // Session-local handles only. Logs survive cleanup; jobs do not survive reload.
@@ -13,6 +13,17 @@ export default function (pi: ExtensionAPI) {
 	// Children retain normal project/provider extensions, but cannot delegate recursively.
 	if (process.env.PSST_SUBAGENT === "1") return;
 	const jobs = new Map<string, Awaited<ReturnType<typeof launch>>>();
+	let ui: ExtensionContext["ui"] | undefined;
+
+	function updateStatus() {
+		const running = [...jobs.values()].filter((job) => job.snapshot().state === "running").length;
+		ui?.setStatus("subagent-count", `subagents:${running}`);
+	}
+
+	pi.on("session_start", (_event, ctx) => {
+		ui = ctx.mode === "tui" ? ctx.ui : undefined;
+		updateStatus();
+	});
 
 	function groupExists(pgid: number) {
 		try { process.kill(-pgid, 0); return true; }
@@ -187,6 +198,8 @@ export default function (pi: ExtensionAPI) {
 			if (signal?.aborted) throw new Error("Launch cancelled");
 			const job = await launch(resolve(ctx.cwd, params.cwd), params.prompt, params.label);
 			jobs.set(job.id, job);
+			updateStatus();
+			void job.closed.then(updateStatus);
 			if (signal?.aborted) { await job.cancel(); throw new Error("Launch cancelled"); }
 			return result(job.snapshot());
 		},
@@ -213,6 +226,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 	pi.on("session_shutdown", async () => {
-		await Promise.all([...jobs.values()].map((j) => j.cancel()));
+		try {
+			await Promise.all([...jobs.values()].map((j) => j.cancel()));
+		} finally {
+			ui?.setStatus("subagent-count", undefined);
+			ui = undefined;
+		}
 	});
 }

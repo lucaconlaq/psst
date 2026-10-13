@@ -1,6 +1,27 @@
 {
   "packages": [
     "npm:@juicesharp/rpiv-ask-user-question",
-    "npm:pi-web-access"
-  ]
+    "npm:pi-web-access",
+    "npm:@smoose/pi-footer@0.1.5"
+  ],
+  "footer": {
+    "preset": "compact",
+    "separator": "powerline-thin",
+    "segments": [
+      "path",
+      "git",
+      "model",
+      "thinking",
+      "context_pct",
+      "custom:agents"
+    ],
+    "customItems": [
+      {
+        "id": "agents",
+        "statusKey": "subagent-count",
+        "prefix": "",
+        "color": "accent"
+      }
+    ]
+  }
 }
