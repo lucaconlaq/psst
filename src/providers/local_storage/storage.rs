@@ -49,15 +49,29 @@ impl StoredKey {
     /// completes leaves ciphertext unchanged; replacement itself has no await.
     /// Errors can be downcast to PersistenceError to inspect completed changes.
     pub async fn set(&mut self, agent: &Agent, id: &str, value: &str) -> Result<()> {
+        self.set_validated(agent, id, value, async { Ok(()) }).await
+    }
+
+    // Await authoring validation after signing but before replacement, so listing
+    // failures or cancellation cannot hide a completed write.
+    pub(super) async fn set_validated<T>(
+        &mut self,
+        agent: &Agent,
+        id: &str,
+        value: &str,
+        validation: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
         validate_id(id)?;
         validate_value(value)?;
         self.file.validate(&self.key)?;
         let _lock = self.lock()?;
         let record = Envelope::encrypt(agent, &self.key, id, value).await?;
+        let validated = validation.await?;
         let mut next = self.file.clone();
         next.records.retain(|record| record.id != id);
         next.records.push(record);
-        self.commit(next, |_| Ok(()))
+        self.commit(next, |_| Ok(()))?;
+        Ok(validated)
     }
 
     /// Remove only the selected ID; retain the per-key file even when empty.
@@ -76,6 +90,29 @@ impl StoredKey {
     fn lock(&self) -> Result<File> {
         let dir = self.path.parent().context("Missing storage directory")?;
         check_path(dir)?;
+        let config_dir = dir
+            .parent()
+            .and_then(Path::parent)
+            .context("Missing configuration directory")?;
+        // Establish missing config ancestors without writing configuration.
+        // Existing ancestors need not be private, but must not be symlinks.
+        let missing: Vec<_> = config_dir
+            .ancestors()
+            .take_while(|path| !path.as_os_str().is_empty() && !path.exists())
+            .collect();
+        for path in missing.into_iter().rev() {
+            check_path(path)?;
+            match fs::DirBuilder::new().mode(0o700).create(path) {
+                Ok(()) => {
+                    File::open(path.parent().context("Missing directory parent")?)?.sync_all()?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.into()),
+            }
+            check_path(path)?;
+            ensure!(path.is_dir(), "Invalid configuration directory path type");
+        }
+        check_path(config_dir)?;
         for path in [dir.parent().context("Missing .psst directory")?, dir] {
             match fs::DirBuilder::new().mode(0o700).create(path) {
                 Ok(()) => {
@@ -202,13 +239,15 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use data_encoding::BASE64;
 
     #[test]
     fn failed_commit_tracks_actual_replacement_and_loaded_state() {
-        let fixture: KeyFile =
-            serde_json::from_slice(include_bytes!("../../tests/fixtures/local-storage-v1.json"))
-                .unwrap();
+        let fixture: KeyFile = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/local-storage-v1.json"
+        ))
+        .unwrap();
         let key =
             PublicKey::from_blob(&BASE64.decode(fixture.public_key.as_bytes()).unwrap()).unwrap();
         for existing in [false, true] {

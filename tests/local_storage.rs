@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use data_encoding::BASE64;
-use psst::local_storage::{
+use psst::providers::local_storage::{
     Envelope, FILE_LIMIT, ID_LIMIT, KeyFile, PublicKey, VALUE_LIMIT, validate_id,
 };
 use serde_json::{Value, json};
@@ -234,7 +234,7 @@ async fn tampering_and_agent_failures_are_errors_without_fallback() {
             .as_str(),
         "text"
     );
-    let absent = psst::local_storage::Agent::at("/nonexistent/psst-test-agent.sock");
+    let absent = psst::providers::local_storage::Agent::at("/nonexistent/psst-test-agent.sock");
     assert!(good.decrypt(&absent, &fake.key, "id").await.is_err());
     assert!(PublicKey::from_blob(b"unsupported").is_err());
 }

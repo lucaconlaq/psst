@@ -1,29 +1,254 @@
-//! Experimental v1 envelope, agent boundary, and persistence.
+//! Experimental local-storage provider, v1 envelope, agent boundary, and
+//! persistence.
 //! See docs/local-storage-v1.md for byte encodings and security limitations.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::io::{self, Write};
 use std::marker::PhantomData;
+use std::path::Path;
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use data_encoding::{BASE64, BASE64_NOPAD, HEXLOWER};
 use ed25519_dalek::VerifyingKey;
+use futures::FutureExt;
+use futures::future::{BoxFuture, Shared};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use serde::de::{MapAccess, Visitor, value::MapAccessDeserializer};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use zeroize::Zeroizing;
+
+use super::{Author, FetchFuture, Identity, PreparedSave, Provider};
 
 pub use agent::Agent;
 pub use storage::StoredKey;
 
 mod agent;
 mod storage;
+
+pub(super) struct LocalStorage;
+
+impl Provider for LocalStorage {
+    fn id(&self) -> &'static str {
+        "local-storage"
+    }
+
+    fn reference_label(&self) -> &'static str {
+        "Local storage · secret-id[#SHA256:fingerprint]"
+    }
+
+    fn author(&self) -> Option<&'static dyn Author> {
+        Some(&LocalStorage)
+    }
+
+    fn fetch<'a>(&'a self, value: &'a str, dir: &'a Path) -> FetchFuture<'a> {
+        Box::pin(async move { Operation::default().fetch(value, dir).await })
+    }
+}
+
+impl Author for LocalStorage {
+    fn identities(&self) -> BoxFuture<'_, Result<Vec<Identity>>> {
+        Box::pin(async {
+            let keys = Agent::from_env()?.identities().await?;
+            ensure!(!keys.is_empty(), "No eligible Ed25519 SSH agent keys");
+            Ok(keys
+                .into_iter()
+                .map(|key| Identity {
+                    fingerprint: key.fingerprint(),
+                    token: key.blob(),
+                })
+                .collect())
+        })
+    }
+
+    fn prepare(&self, dir: &Path, id: &str, identity: &Identity) -> Result<Box<dyn PreparedSave>> {
+        validate_id(id)?;
+        let key = PublicKey::from_blob(&identity.token)?;
+        ensure!(
+            key.fingerprint() == identity.fingerprint,
+            "Mismatched selected identity"
+        );
+        let stored = StoredKey::load(dir, key.clone())?;
+        let replacing = stored.records().iter().any(|record| record.id == id);
+        Ok(Box::new(Creation {
+            dir: dir.to_owned(),
+            id: id.to_owned(),
+            key,
+            stored,
+            replacing,
+        }))
+    }
+
+    fn value_limit(&self) -> usize {
+        VALUE_LIMIT
+    }
+}
+
+struct Creation {
+    dir: std::path::PathBuf,
+    id: String,
+    key: PublicKey,
+    stored: StoredKey,
+    replacing: bool,
+}
+
+impl PreparedSave for Creation {
+    fn replacing(&self) -> bool {
+        self.replacing
+    }
+
+    fn save(mut self: Box<Self>, value: Zeroizing<String>) -> BoxFuture<'static, Result<String>> {
+        Box::pin(async move {
+            let agent = Agent::from_env()?;
+            // One deadline includes re-listing, queued signing, and encryption.
+            phase(async {
+                let keys = agent.identities().await?;
+                ensure!(
+                    keys.contains(&self.key),
+                    "Selected SSH agent key is no longer loaded"
+                );
+                // Validate other loaded keys before requesting signatures.
+                for key in keys.iter().filter(|key| **key != self.key) {
+                    StoredKey::load(&self.dir, key.clone())?;
+                }
+                let keys = self
+                    .stored
+                    .set_validated(&agent, &self.id, &value, async {
+                        let keys = agent.identities().await?;
+                        ensure!(
+                            keys.contains(&self.key),
+                            "Selected SSH agent key is no longer loaded"
+                        );
+                        Ok(keys)
+                    })
+                    .await?;
+                // Approval may change identities and records. Use refreshed keys
+                // and recheck records without awaiting after replacement.
+                let mut ambiguous = false;
+                for key in keys.iter().filter(|key| **key != self.key) {
+                    let stored = StoredKey::load(&self.dir, key.clone()).map_err(|source| {
+                        crate::config::PersistenceError {
+                            changed: true,
+                            source: source.context("Ciphertext saved; reference validation failed"),
+                        }
+                    })?;
+                    ambiguous |= stored.records().iter().any(|record| record.id == self.id);
+                }
+                Ok(if ambiguous {
+                    format!("{}#{}", self.id, self.key.fingerprint())
+                } else {
+                    self.id.clone()
+                })
+            })
+            .await
+        })
+    }
+}
+
+fn reference(value: &str) -> Result<(&str, Option<&str>)> {
+    let (id, selector) = match value.split_once('#') {
+        Some((id, selector)) => {
+            let encoded = selector
+                .strip_prefix("SHA256:")
+                .context("Expected OpenSSH SHA256 fingerprint")?;
+            let bytes = BASE64_NOPAD
+                .decode(encoded.as_bytes())
+                .context("Invalid OpenSSH fingerprint")?;
+            ensure!(
+                bytes.len() == 32 && BASE64_NOPAD.encode(&bytes) == encoded,
+                "Invalid OpenSSH fingerprint"
+            );
+            (id, Some(selector))
+        }
+        None => (value, None),
+    };
+    validate_id(id)?;
+    Ok((id, selector))
+}
+
+type Work<T> = Shared<BoxFuture<'static, Result<T, String>>>;
+
+#[derive(Default)]
+struct State {
+    keys: Option<Work<Vec<PublicKey>>>,
+    values: HashMap<(String, String), Work<Zeroizing<String>>>,
+}
+
+// Only bulk dispatch shares this context. Single fetches and UI refetches
+// create fresh contexts. Zeroizing cached values are discarded with the
+// operation.
+#[derive(Default)]
+pub(super) struct Operation(Mutex<State>);
+
+impl Operation {
+    pub(super) async fn fetch(&self, value: &str, dir: &Path) -> Result<Zeroizing<String>> {
+        let (id, selector) = reference(value)?;
+        let agent = Agent::from_env()?;
+        // Includes operation queueing, identity listing and signing in one budget.
+        phase(async {
+            let mut state = self.0.lock().await;
+            let listing_agent = agent.clone();
+            let keys = state
+                .keys
+                .get_or_insert_with(|| {
+                    async move {
+                        listing_agent
+                            .identities()
+                            .await
+                            .map_err(|error| format!("{error:#}"))
+                    }
+                    .boxed()
+                    .shared()
+                })
+                .clone();
+            drop(state);
+            let keys = keys.await.map_err(|error| anyhow::anyhow!(error))?;
+            let mut selected = None;
+            for key in &keys {
+                if selector.is_some_and(|selector| selector != key.fingerprint()) {
+                    continue;
+                }
+                let stored = StoredKey::load(dir, key.clone())?;
+                if let Some(record) = stored.records().iter().find(|record| record.id == id) {
+                    ensure!(
+                        selected.is_none(),
+                        "Ambiguous local-storage identity for ID"
+                    );
+                    selected = Some((key.clone(), record.clone()));
+                }
+            }
+            let Some((key, record)) = selected else {
+                bail!("No loaded eligible key with a stored value for local-storage ID");
+            };
+            let identity = (id.to_owned(), key.fingerprint());
+            let mut state = self.0.lock().await;
+            let id = id.to_owned();
+            let work = state
+                .values
+                .entry(identity)
+                .or_insert_with(|| {
+                    async move {
+                        record
+                            .decrypt(&agent, &key, &id)
+                            .await
+                            .map_err(|error| format!("{error:#}"))
+                    }
+                    .boxed()
+                    .shared()
+                })
+                .clone();
+            drop(state);
+            work.await.map_err(|error| anyhow::anyhow!(error))
+        })
+        .await
+    }
+}
 
 /// Maximum encoded per-key JSON bytes, on both reads and writes.
 pub const FILE_LIMIT: usize = 4 * 1024 * 1024;
@@ -443,9 +668,10 @@ mod tests {
 
     #[test]
     fn stable_encoding_and_derivation_vector() {
-        let file: KeyFile =
-            serde_json::from_slice(include_bytes!("../../tests/fixtures/local-storage-v1.json"))
-                .unwrap();
+        let file: KeyFile = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/local-storage-v1.json"
+        ))
+        .unwrap();
         let key =
             PublicKey::from_blob(&BASE64.decode(file.public_key.as_bytes()).unwrap()).unwrap();
         let record = file.records[0].validate(&key).unwrap();

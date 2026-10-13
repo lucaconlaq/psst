@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ed25519_dalek::{Signer, SigningKey};
-use psst::local_storage::{Agent, PublicKey};
+use psst::providers::local_storage::{Agent, PublicKey};
 use sha2::{Digest, Sha512};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -47,6 +47,10 @@ pub struct State {
     pub requested: Notify,
     pub delay: AtomicUsize,
     pub identities: std::sync::Mutex<Vec<Vec<u8>>>,
+    pub listing_gate: Semaphore,
+    pub listing_requested: Notify,
+    pub delay_listing: AtomicUsize,
+    pub listing_fault: AtomicUsize,
 }
 
 impl FakeAgent {
@@ -82,6 +86,10 @@ impl FakeAgent {
             gate: Semaphore::new(0),
             requested: Notify::new(),
             delay: AtomicUsize::new(0),
+            listing_gate: Semaphore::new(0),
+            listing_requested: Notify::new(),
+            delay_listing: AtomicUsize::new(0),
+            listing_fault: AtomicUsize::new(0),
             identities: std::sync::Mutex::new(
                 seeds
                     .iter()
@@ -186,7 +194,20 @@ async fn serve(
         let mut reply = Vec::new();
         match request[0] {
             11 => {
-                let fault = state.fault.load(Ordering::SeqCst);
+                if state.delay_listing.load(Ordering::SeqCst) != 0 {
+                    state.listing_requested.notify_one();
+                    let mut byte = [0];
+                    tokio::select! {
+                        permit = state.listing_gate.acquire() => { permit.unwrap().forget(); }
+                        read = stream.read(&mut byte) => { assert_eq!(read?, 0); return Ok(()); }
+                    }
+                }
+                let listing_fault = state.listing_fault.load(Ordering::SeqCst);
+                let fault = if listing_fault == 0 {
+                    state.fault.load(Ordering::SeqCst)
+                } else {
+                    listing_fault
+                };
                 if fault == Fault::Disconnect as usize {
                     return Ok(());
                 }

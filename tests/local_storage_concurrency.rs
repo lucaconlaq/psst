@@ -3,7 +3,7 @@
 use std::fs;
 use std::time::Duration;
 
-use psst::local_storage::{KeyFile, StoredKey};
+use psst::providers::local_storage::{KeyFile, StoredKey};
 
 use support::agent::FakeAgent;
 

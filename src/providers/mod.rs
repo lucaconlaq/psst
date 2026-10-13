@@ -2,6 +2,7 @@ use crate::{
     browser::Level,
     config::{Entries, Entry},
 };
+
 use anyhow::{Result, bail};
 use futures::future::{BoxFuture, join_all};
 use std::path::Path;
@@ -9,18 +10,50 @@ use zeroize::Zeroizing;
 
 pub use op::totp;
 
-mod local_storage;
+/// Experimental SSH-agent encryption, bounded v1 storage, and secret
+/// resolution.
+pub mod local_storage;
 mod manual;
 mod op;
 mod shell;
 mod terraform;
 mod vault;
 
-/// A sendable provider fetch, using inherited authentication and the config cwd.
+/// A sendable provider fetch, using inherited authentication and the config
+/// cwd.
 pub type FetchFuture<'a> = BoxFuture<'a, Result<Zeroizing<String>>>;
 
+/// Public identity metadata; the token is opaque to the UI.
+#[derive(Clone)]
+pub struct Identity {
+    /// Displayable fingerprint, never agent comments or secret text.
+    pub fingerprint: String,
+    /// Provider-owned identity encoding.
+    pub token: Vec<u8>,
+}
+
+/// Provider-owned encrypted authoring, separate from reference browsing.
+pub trait Author: Sync {
+    /// List eligible identities with a bounded agent-work deadline.
+    fn identities(&self) -> BoxFuture<'_, Result<Vec<Identity>>>;
+    /// Validate and load the selected record before requesting replacement consent.
+    fn prepare(&self, dir: &Path, id: &str, key: &Identity) -> Result<Box<dyn PreparedSave>>;
+    /// Maximum exact UTF-8 value bytes accepted by this author.
+    fn value_limit(&self) -> usize;
+}
+
+/// A loaded record snapshot. Implementations must reject concurrent changes.
+pub trait PreparedSave: Send {
+    /// Whether saving would replace ciphertext, affecting all its references.
+    fn replacing(&self) -> bool;
+    /// Persist ciphertext and return its authored reference, never plaintext.
+    /// Dropping before replacement cancels work; completed writes are not undone.
+    fn save(self: Box<Self>, value: Zeroizing<String>) -> BoxFuture<'static, Result<String>>;
+}
+
 /// Shared fetch, editor metadata, and optional browsing interface for a source.
-/// Implementations live in individual modules and are registered in `PROVIDERS`.
+/// Implementations live in individual modules and are registered in
+/// `PROVIDERS`.
 pub trait Provider: Sync {
     /// Case-sensitive identifier persisted in configuration files.
     fn id(&self) -> &'static str;
@@ -32,6 +65,10 @@ pub trait Provider: Sync {
     }
     /// Starting browser location, or none for text-only references.
     fn browser(&self) -> Option<Level> {
+        None
+    }
+    /// Optional encrypted value authoring; the UI never interprets identity tokens.
+    fn author(&self) -> Option<&'static dyn Author> {
         None
     }
     /// Resolve a stored reference without modifying the process environment.
@@ -76,7 +113,8 @@ pub async fn fetch(entry: &Entry, dir: &Path) -> Result<Zeroizing<String>> {
     }
     Ok(value)
 }
-/// Resolve all entries concurrently, preserving config order and individual errors.
+/// Resolve all entries concurrently, preserving config order and individual
+/// errors.
 /// Provider subprocesses cannot depend on previously resolved secrets.
 pub async fn all(entries: &Entries, dir: &Path) -> Vec<(String, Result<Zeroizing<String>>)> {
     let operation = local_storage::Operation::default();

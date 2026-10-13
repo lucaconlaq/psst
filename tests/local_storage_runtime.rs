@@ -8,8 +8,8 @@ use std::sync::atomic::Ordering;
 use data_encoding::BASE64;
 use futures::FutureExt;
 use psst::config::{Entries, Entry};
-use psst::local_storage::{Envelope, FILE_LIMIT, KeyFile, PublicKey};
 use psst::providers;
+use psst::providers::local_storage::{Envelope, FILE_LIMIT, KeyFile, PublicKey};
 use support::agent::{FakeAgent, Fault};
 use tokio::process::Command;
 

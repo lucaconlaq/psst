@@ -119,6 +119,13 @@ impl Config {
     /// Validate and atomically save entries under a cooperative lock.
     /// Reject changes since loading; uncooperative writers can still race the write.
     pub fn save(&mut self, entries: Entries) -> Result<()> {
+        self.save_checked(entries, |_| Ok(()))
+    }
+    pub(crate) fn save_checked(
+        &mut self,
+        entries: Entries,
+        boundary: impl FnMut(WriteBoundary) -> Result<()>,
+    ) -> Result<()> {
         for (name, entry) in &entries {
             if !valid_name(name) || entry.source.contains('\0') || entry.value.contains('\0') {
                 bail!("Invalid name or NUL in entry");
@@ -142,10 +149,12 @@ impl Config {
         if bytes.len() > 4 * 1024 * 1024 {
             bail!("Config exceeds 4 MiB");
         }
-        atomic_write(&self.path, &bytes)?;
-        self.baseline = Some(bytes);
-        self.entries = entries;
-        Ok(())
+        let result = atomic_write_checked(&self.path, &bytes, boundary);
+        if result.as_ref().err().is_none_or(|error| error.changed) {
+            self.baseline = Some(bytes);
+            self.entries = entries;
+        }
+        result.map_err(anyhow::Error::new)
     }
 }
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {

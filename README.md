@@ -24,6 +24,11 @@ Open the interactive console to manage your secrets:
 psst
 ```
 
+Experimental encrypted local values can be created by selecting `local-storage`
+in the editor and pressing `Ctrl+N`. See the [local-storage contract and TUI
+instructions](docs/local-storage-v1.md); real 1Password compatibility and
+independent crypto/format review remain outstanding.
+
 ### Run Commands with Secrets
 
 Run any command with your secrets injected into its environment:

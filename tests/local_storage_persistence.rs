@@ -3,7 +3,7 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
-use psst::local_storage::{FILE_LIMIT, StoredKey, VALUE_LIMIT};
+use psst::providers::local_storage::{FILE_LIMIT, StoredKey, VALUE_LIMIT};
 
 use support::agent::FakeAgent;
 
@@ -238,6 +238,16 @@ async fn symlinked_ancestors_directories_records_and_locks_are_refused() {
     fs::create_dir(&real).unwrap();
     symlink(&real, &alias).unwrap();
     assert!(StoredKey::load(&alias, fake.key.clone()).is_err());
+
+    // A missing config ancestor becoming a symlink after load is also refused.
+    let missing = config_dir.join("missing");
+    let nested = missing.join("nested");
+    let mut stored = StoredKey::load(&nested, fake.key.clone()).unwrap();
+    symlink(&real, &missing).unwrap();
+    let signs = fake.signs();
+    assert!(stored.set(&fake.client, "id", "value").await.is_err());
+    assert_eq!(fake.signs(), signs);
+    assert!(!real.join("nested").exists());
 }
 
 #[tokio::test]

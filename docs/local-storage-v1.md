@@ -1,8 +1,8 @@
 # Experimental local-storage v1 contract
 
-Ticket 01 implements an independently exercisable agent/envelope library, not a
-registered provider, storage-management CLI, persistence layer, or TUI workflow.
-Subsequent tickets consume this contract. No real integration is advertised as
+The agent/envelope library introduced in ticket 01 now supports the registered
+provider, config-relative persistence, runtime resolution, and masked TUI creation.
+There is no storage-management CLI. No real integration is advertised as
 tested: only the deterministic fake Unix agent has been exercised. Independent
 crypto/format review and consented Linux/macOS 1Password checks remain outstanding.
 
@@ -13,7 +13,33 @@ entries use `"source": "local-storage"` and `"value": "secret-id"` or
 `"value": "secret-id#SHA256:fingerprint"`. Ciphertext is read from
 `.psst/local-storage/` beside the selected configuration (including `PSST_CONFIG`),
 not the caller's directory. Runtime use requires an eligible loaded SSH-agent key
-and an existing v1 record; there is no storage-management CLI or TUI authoring yet.
+and a v1 record. There is no storage-management CLI.
+
+## Masked TUI creation (experimental)
+
+Press `a`, select `local-storage` in the source field, then `Ctrl+N` to create an
+encrypted value. `Tab` cycles environment name, exact ID, masked value, and SSH
+fingerprints. A sole eligible Ed25519 key is selected automatically; with multiple
+keys, use up/down and `Enter` in the fingerprint field to select explicitly.
+`Enter` in the value field inserts a newline; bracketed paste preserves exact
+UTF-8, whitespace, and empty values. NUL rejects the entire paste. The value stays
+masked, including when using the ordinary editor's reveal/preview shortcuts.
+`Ctrl+S` saves; existing `(ID,key)` records require `y` confirmation with a warning
+that all references to that record are affected. `n` retains the draft unchanged.
+
+Human editing has no agent deadline. Save rechecks loaded identities and uses one
+`PSST_TIMEOUT` agent-work budget, including queued requests, without retry or
+fallback. Authored references omit the selector only when the selected key is the
+sole loaded key with this ID; otherwise they include its OpenSSH fingerprint.
+
+Ciphertext is persisted before configuration. Storage failure leaves configuration
+unchanged; config failure may leave unused ciphertext. Post-replacement sync
+failures report changed files with uncertain durability, not rollback. `Esc`
+cancels unfinished work and discards the zeroizing draft; already completed writes
+are not undone. Late completed storage results never save an old draft's reference
+into a new draft. Reopen the configuration after external edits; retained unused
+records are not automatically cleaned up. Full reuse/update and encrypted deletion
+workflows remain later ticket scope.
 
 An unqualified reference requires exactly one loaded eligible key with that ID;
 other IDs do not count. A selector restricts resolution to that fingerprint.
@@ -45,12 +71,16 @@ fingerprint is `SHA256:` plus standard unpadded base64 of SHA256(the entire blob
 The filename is the lowercase 64-character hex of that same hash plus `.json`.
 No ID, agent comment, or fingerprint text is used as a filesystem path.
 
-The eventual storage location is `.psst/local-storage/` beside the selected
-configuration; this slice does not read or write that directory. Files contain
-at most 1,024 records and at most 4,194,304 encoded JSON bytes, on reads **and**
-writes. Serialization stops at the byte bound rather than allocating an entire
-oversized output first. Future filesystem callers must bound reads before
-allocation and enforce permissions, symlink refusal, locking, and atomic saves.
+Storage is read and written in `.psst/local-storage/` beside the selected
+configuration. Saves create missing configuration-directory ancestors before
+persisting ciphertext, without writing configuration first. Storage directories
+use Unix 0700 permissions and files use 0600; existing storage with nonprivate
+permissions and symlinked storage paths or ancestors are refused. Per-key saves
+use cooperative locking, loaded-content conflict detection, and synced atomic
+replacement. Files contain at most 1,024 records and at most 4,194,304 encoded
+JSON bytes, on reads **and** writes. Reads are bounded before parsing;
+serialization stops at the byte bound rather than allocating an entire oversized
+output first.
 
 ## JSON
 
@@ -152,13 +182,17 @@ Ed25519 identities and duplicate eligible identities are errors. Comments are
 ignored. Response frames are 1–262,144 bytes and lists have at most 1,024 identities;
 frames and nested strings must be complete with no trailing data.
 
-A process-wide asynchronous mutex serializes complete agent-work phases (including
-both creation signatures), even across different endpoint handles. Each phase
-uses positive `PSST_TIMEOUT` seconds, default 30 for missing/invalid/zero values.
-The deadline starts before acquiring the mutex and includes queueing, connecting,
-signing, verification and encryption/decryption; human editing is outside this
-API and deadline. Cancellation is dropping the future. Cancellation or timeout
-drops its queue waiter/guard and its operation-owned socket; subsequent operations
+A process-wide asynchronous mutex serializes individual identity exchanges and
+signing/crypto sections, even across different endpoint handles. Both creation
+signatures, their repeatability check, key derivation, and encryption share one
+guard; decryption signing, verification, key derivation, and decryption also share
+one guard. Identity listing acquires a separate guard, so other work may interleave
+between listing and signing. The encompassing fetch/save agent-work deadline is
+distinct from these mutex sections: it uses positive `PSST_TIMEOUT` seconds,
+default 30 for missing/invalid/zero values, and includes queueing, connecting,
+identity listing, signing, verification and encryption/decryption. Human editing
+is outside this API and deadline. Cancellation is dropping the future. Cancellation
+or timeout drops its queue waiter/guard and its operation-owned socket; subsequent operations
 open a new socket. There are no detached background signing tasks or retries.
 Closing the socket cannot promise to dismiss an agent's own approval UI.
 

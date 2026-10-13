@@ -172,13 +172,91 @@ struct Browser {
     selected: usize,
     loading: bool,
 }
+struct Creator {
+    editor: Editor,
+    secret: Zeroizing<String>,
+    field: usize,
+    cursor: usize,
+    keys: Vec<providers::Identity>,
+    selected: usize,
+    chosen: Option<usize>,
+    busy: bool,
+    pending: Option<Box<dyn providers::PreparedSave>>,
+}
+impl Creator {
+    fn text(&self) -> &str {
+        match self.field {
+            0 => &self.editor.name,
+            1 => &self.editor.value,
+            2 => &self.secret,
+            _ => "",
+        }
+    }
+    fn text_mut(&mut self) -> Option<&mut String> {
+        match self.field {
+            0 => Some(&mut self.editor.name),
+            1 => Some(&mut self.editor.value),
+            2 => Some(&mut self.secret),
+            _ => None,
+        }
+    }
+    fn focus(&mut self, field: usize) {
+        self.field = field;
+        self.cursor = self.text().chars().count();
+    }
+    fn insert(&mut self, text: &str) {
+        let cursor = self.cursor;
+        if let Some(value) = self.text_mut() {
+            // Allocate a zeroizing replacement so discarded secret allocations
+            // are wiped rather than freed by String growth.
+            let mut next = Zeroizing::new(String::with_capacity(value.len() + text.len()));
+            let pos = byte_at(value, cursor);
+            next.push_str(&value[..pos]);
+            next.push_str(text);
+            next.push_str(&value[pos..]);
+            zeroize::Zeroize::zeroize(value);
+            std::mem::swap(value, &mut next);
+            self.cursor += text.chars().count();
+        }
+    }
+    fn delete(&mut self, back: bool) {
+        let cursor = self.cursor;
+        if back && cursor == 0 {
+            return;
+        }
+        let start = if back { cursor - 1 } else { cursor };
+        if let Some(value) = self.text_mut()
+            && start < value.chars().count()
+        {
+            let mut next = Zeroizing::new(String::with_capacity(value.len()));
+            next.push_str(&value[..byte_at(value, start)]);
+            next.push_str(&value[byte_at(value, start + 1)..]);
+            zeroize::Zeroize::zeroize(value);
+            std::mem::swap(value, &mut next);
+            self.cursor = start;
+        }
+    }
+}
+
 enum View {
     Main,
+    Create(Creator),
     Editor(Editor),
     Browser { editor: Editor, browser: Browser },
     Help,
 }
 enum Message {
+    Identities {
+        generation: u64,
+        result: Result<Vec<providers::Identity>>,
+    },
+    Created {
+        generation: u64,
+        name: String,
+        original: Option<String>,
+        source: String,
+        result: Result<String>,
+    },
     Reveal {
         generation: u64,
         name: String,
@@ -327,8 +405,178 @@ impl App {
             Err(e) => self.status(e.to_string(), true),
         }
     }
+    fn create(&mut self, tx: &mpsc::UnboundedSender<Message>, tasks: &mut Tasks) {
+        let View::Editor(editor) = &self.view else {
+            return;
+        };
+        let Some(author) = providers::get(&editor.source).and_then(|p| p.author()) else {
+            self.status("This provider does not support encrypted creation.", true);
+            return;
+        };
+        let view = std::mem::replace(&mut self.view, View::Main);
+        let View::Editor(mut editor) = view else {
+            return;
+        };
+        editor.preview = None;
+        editor.show = false;
+        self.invalidate();
+        self.view = View::Create(Creator {
+            cursor: editor.name.chars().count(),
+            editor,
+            secret: Zeroizing::new(String::new()),
+            field: 0,
+            keys: vec![],
+            selected: 0,
+            chosen: None,
+            busy: true,
+            pending: None,
+        });
+        self.status("Listing eligible keys… Esc cancels.", false);
+        let generation = self.generation;
+        let tx = tx.clone();
+        tasks.push(
+            generation,
+            tokio::spawn(async move {
+                let result = author.identities().await;
+                let _ = tx.send(Message::Identities { generation, result });
+            }),
+        );
+    }
+    fn prepare_creation(&mut self, tx: &mpsc::UnboundedSender<Message>, tasks: &mut Tasks) {
+        let View::Create(c) = &mut self.view else {
+            return;
+        };
+        if c.busy || c.pending.is_some() {
+            return;
+        }
+        if !crate::config::valid_name(&c.editor.name) {
+            self.status("Invalid environment name.", true);
+            return;
+        }
+        if c.editor.original.as_deref() != Some(&c.editor.name)
+            && self.config.entries.contains_key(&c.editor.name)
+        {
+            self.status("That name already exists. Choose another name.", true);
+            return;
+        }
+        let Some(key) = c.chosen.and_then(|index| c.keys.get(index)) else {
+            self.status(
+                "Choose an SSH fingerprint explicitly (Tab to keys, Enter).",
+                true,
+            );
+            return;
+        };
+        let Some(author) = providers::get(&c.editor.source).and_then(|p| p.author()) else {
+            return;
+        };
+        match author.prepare(self.config.dir(), &c.editor.value, key) {
+            Ok(pending) => {
+                let replacing = pending.replacing();
+                c.pending = Some(pending);
+                if replacing {
+                    self.status("Replace ciphertext? Updates affect ALL references to this record. y confirms; n cancels.", true);
+                } else {
+                    self.save_creation(tx, tasks);
+                }
+            }
+            Err(error) => self.status(error.to_string(), true),
+        }
+    }
+    fn save_creation(&mut self, tx: &mpsc::UnboundedSender<Message>, tasks: &mut Tasks) {
+        let View::Create(c) = &mut self.view else {
+            return;
+        };
+        let Some(pending) = c.pending.take() else {
+            return;
+        };
+        c.busy = true;
+        let value = c.secret.clone();
+        let name = c.editor.name.clone();
+        let original = c.editor.original.clone();
+        let source = c.editor.source.clone();
+        let generation = self.generation;
+        let tx = tx.clone();
+        self.status(
+            "Saving ciphertext… Esc cancels unfinished work, not completed writes.",
+            false,
+        );
+        tasks.push(
+            generation,
+            tokio::spawn(async move {
+                let result = pending.save(value).await;
+                // No await between replacement completion and reporting it.
+                let _ = tx.send(Message::Created {
+                    generation,
+                    name,
+                    original,
+                    source,
+                    result,
+                });
+            }),
+        );
+    }
     fn message(&mut self, msg: Message) {
+        self.message_checked(msg, |_| Ok(()));
+    }
+    fn message_checked(
+        &mut self,
+        msg: Message,
+        boundary: impl FnMut(crate::config::WriteBoundary) -> Result<()>,
+    ) {
         match msg {
+            Message::Identities { generation, result } if generation == self.generation => {
+                if let View::Create(c) = &mut self.view {
+                    c.busy = false;
+                    match result {
+                        Ok(keys) if !keys.is_empty() => {
+                            c.chosen = (keys.len() == 1).then_some(0);
+                            c.keys = keys;
+                            self.status("Masked exact text · Tab fields · Enter inserts newline in value · Ctrl+S saves.", false);
+                        }
+                        Ok(_) => {
+                            self.status("No eligible Ed25519 SSH agent keys. Esc cancels.", true)
+                        }
+                        Err(error) => self.status(error.to_string(), true),
+                    }
+                }
+            }
+            Message::Created {
+                generation,
+                name,
+                original,
+                source,
+                result,
+            } => {
+                let current = generation == self.generation && matches!(self.view, View::Create(_));
+                if current && let View::Create(c) = &mut self.view {
+                    c.busy = false;
+                }
+                match result {
+                    Ok(reference) if current => {
+                        let mut entries = self.config.entries.clone();
+                        if let Some(original) = original && original != name { entries.shift_remove(&original); }
+                        entries.insert(name, Entry { source, value: reference });
+                        match self.config.save_checked(entries, boundary) {
+                            Ok(()) => { self.main(); self.status("Saved encrypted value and configuration.", false); }
+                            Err(error) => {
+                                let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
+                                self.status(if changed {
+                                    format!("Ciphertext and configuration replaced; config durability uncertain: {error}")
+                                } else {
+                                    format!("Ciphertext saved; configuration unchanged; unused ciphertext may remain: {error}")
+                                }, true);
+                            }
+                        }
+                    }
+                    Ok(_) => self.status("Cancelled draft: ciphertext was saved; configuration unchanged. Completed writes were not undone.", true),
+                    Err(error) => {
+                        let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
+                        self.status(if changed {
+                            format!("Ciphertext replaced but durability uncertain; configuration unchanged: {error}")
+                        } else { format!("Ciphertext unchanged; configuration unchanged: {error}") }, true);
+                    }
+                }
+            }
             Message::Reveal {
                 generation,
                 name,
@@ -489,6 +737,76 @@ impl App {
             }
             return false;
         }
+        if matches!(self.view, View::Create(_)) {
+            if key.code == KeyCode::Esc {
+                self.main();
+                self.status("Draft cancelled. Completed writes are not undone; pending completion will be reported.", false);
+                return false;
+            }
+            let View::Create(c) = &mut self.view else {
+                return false;
+            };
+            if c.busy {
+                return false;
+            }
+            if c.pending.is_some() {
+                match key.code {
+                    KeyCode::Char('y') => self.save_creation(tx, tasks),
+                    KeyCode::Char('n') => {
+                        c.pending = None;
+                        self.status("Replacement cancelled; draft retained.", false);
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if key.code == KeyCode::Char('s') {
+                    self.prepare_creation(tx, tasks);
+                }
+                return false;
+            }
+            match key.code {
+                KeyCode::Tab => c.focus((c.field + 1) % 4),
+                KeyCode::BackTab => c.focus((c.field + 3) % 4),
+                KeyCode::Up if c.field == 3 => c.selected = c.selected.saturating_sub(1),
+                KeyCode::Down if c.field == 3 => {
+                    c.selected = (c.selected + 1).min(c.keys.len().saturating_sub(1))
+                }
+                KeyCode::Enter if c.field == 3 && !c.keys.is_empty() => c.chosen = Some(c.selected),
+                KeyCode::Enter if c.field == 2 => {
+                    let limit = providers::get(&c.editor.source)
+                        .and_then(|p| p.author())
+                        .map(|a| a.value_limit())
+                        .unwrap_or(0);
+                    if c.secret.len() < limit {
+                        c.insert("\n");
+                    } else {
+                        self.status("Value exceeds byte limit; draft unchanged.", true);
+                    }
+                }
+                KeyCode::Left => c.cursor = c.cursor.saturating_sub(1),
+                KeyCode::Right => c.cursor = (c.cursor + 1).min(c.text().chars().count()),
+                KeyCode::Home => c.cursor = 0,
+                KeyCode::End => c.cursor = c.text().chars().count(),
+                KeyCode::Backspace => c.delete(true),
+                KeyCode::Delete => c.delete(false),
+                KeyCode::Char('\0') => self.status("NUL rejected; draft unchanged.", true),
+                KeyCode::Char(ch) => {
+                    let limit = providers::get(&c.editor.source)
+                        .and_then(|p| p.author())
+                        .map(|a| a.value_limit())
+                        .unwrap_or(0);
+                    if c.field != 2 || c.secret.len() + ch.len_utf8() <= limit {
+                        c.insert(&Zeroizing::new(ch.to_string()));
+                    } else {
+                        self.status("Value exceeds byte limit; draft unchanged.", true);
+                    }
+                }
+                _ => {}
+            }
+            return false;
+        }
         if matches!(self.view, View::Editor(_)) {
             if key.code == KeyCode::Esc {
                 self.main();
@@ -498,6 +816,7 @@ impl App {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
                     KeyCode::Char('s') => self.save(),
+                    KeyCode::Char('n') => self.create(tx, tasks),
                     KeyCode::Char('p') => self.preview(tx, tasks),
                     KeyCode::Char('r') => {
                         if let View::Editor(e) = &mut self.view {
@@ -696,7 +1015,23 @@ impl App {
         false
     }
     fn paste(&mut self, text: String) {
-        if let View::Editor(e) = &mut self.view {
+        let text = Zeroizing::new(text);
+        if let View::Create(c) = &mut self.view {
+            if c.busy || c.pending.is_some() {
+                return;
+            }
+            let limit = providers::get(&c.editor.source)
+                .and_then(|p| p.author())
+                .map(|a| a.value_limit())
+                .unwrap_or(0);
+            if text.contains('\0') {
+                self.status("NUL rejected; draft unchanged.", true);
+            } else if c.field == 2 && c.secret.len() + text.len() > limit {
+                self.status("Value exceeds byte limit; draft unchanged.", true);
+            } else {
+                c.insert(&text);
+            }
+        } else if let View::Editor(e) = &mut self.view {
             e.change_text(&text.replace('\0', ""));
             self.generation += 1;
         } else if self.searching {
@@ -779,7 +1114,14 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 ("?", "help"),
                 ("q", "quit"),
             ],
+            View::Create(_) => &[
+                ("Tab", "fields"),
+                ("Ctrl+S", "save encrypted"),
+                ("Enter", "newline / choose key"),
+                ("Esc", "cancel"),
+            ],
             View::Editor(_) => &[
+                ("Ctrl+N", "create encrypted"),
                 ("Tab", "fields"),
                 ("Ctrl+S", "save"),
                 ("Esc", "cancel"),
@@ -893,6 +1235,68 @@ fn draw(frame: &mut Frame, app: &mut App) {
                     .row_highlight_style(Style::default().bg(PANEL).fg(ACCENT))
                     .highlight_symbol("› ");
                 frame.render_stateful_widget(table, chunks[1], &mut app.table);
+            }
+        }
+        View::Create(c) => {
+            let inner = block(" Create encrypted value · always masked ");
+            let body = inner.inner(chunks[1]);
+            frame.render_widget(inner, chunks[1]);
+            let fields = Layout::vertical([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(1),
+            ])
+            .split(body);
+            for (i, label) in [
+                "Environment name",
+                "Exact secret ID",
+                "Exact UTF-8 value · masked",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let text = match i {
+                    0 => clean(&c.editor.name),
+                    1 => clean(&c.editor.value),
+                    _ => MASK.to_owned(),
+                };
+                frame.render_widget(
+                    Paragraph::new(text).block(block(*label).border_style(
+                        Style::default().fg(if c.field == i { ACCENT } else { MUTED }),
+                    )),
+                    fields[i],
+                );
+            }
+            let items: Vec<_> = c
+                .keys
+                .iter()
+                .enumerate()
+                .map(|(i, key)| {
+                    ListItem::new(format!(
+                        "{} {}",
+                        if c.chosen == Some(i) { "✓" } else { " " },
+                        key.fingerprint
+                    ))
+                })
+                .collect();
+            let mut state =
+                ListState::default().with_selected((!c.keys.is_empty()).then_some(c.selected));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(
+                        block(" SSH fingerprint · ↑↓ then Enter to choose ").border_style(
+                            Style::default().fg(if c.field == 3 { ACCENT } else { MUTED }),
+                        ),
+                    )
+                    .highlight_style(Style::default().bg(PANEL)),
+                fields[3],
+                &mut state,
+            );
+            if c.pending.is_some() {
+                let popup = centered(area, 85, 7);
+                frame.render_widget(Clear, popup);
+                frame.render_widget(Paragraph::new("Replace existing ciphertext?\nUpdates affect ALL references to this (ID,key) record.\n\ny confirms replacement · n retains draft · Esc cancels").block(block(" Confirm replacement ")).wrap(Wrap { trim: false }), popup);
             }
         }
         View::Editor(e) => {
@@ -1014,7 +1418,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
         View::Help => {
-            frame.render_widget(Paragraph::new("YOUR SECRETS, YOUR TOOLS\n\n↑ / ↓  Select     Enter  Edit     a  Add     /  Search\nSpace  Reveal/hide (30 seconds)     c  Copy     Delete  Remove\nPgUp / PgDn  Scroll     q / Ctrl+C  Quit\n\nEDITOR\nTab / Shift+Tab  Fields     ← / →  Choose source or move cursor\nCtrl+S  Save     Esc  Discard     Ctrl+R  Show/hide literal\nCtrl+B  Browse op/Vault     Ctrl+P  Fetch preview (opt-in)\n\nBROWSER\nType to filter     Enter  Select     Backspace  Parent\nEsc  Cancel browser, preserving your draft\n\nUsage: psst COMMAND [ARGS...] injects secrets in parallel.\n--copy NAME copies one; --write exports a private .env.\nManual secrets and .env files are plaintext.\nClipboard is not automatically cleared.\n\nEsc or Enter returns.").block(block(" Help ")).wrap(Wrap { trim: false }), chunks[1]);
+            frame.render_widget(Paragraph::new("YOUR SECRETS, YOUR TOOLS\n\n↑ / ↓  Select     Enter  Edit     a  Add     /  Search\nSpace  Reveal/hide (30 seconds)     c  Copy     Delete  Remove\nPgUp / PgDn  Scroll     q / Ctrl+C  Quit\n\nEDITOR\nTab / Shift+Tab  Fields     ← / →  Choose source or move cursor\nCtrl+S  Save     Esc  Discard     Ctrl+R  Show/hide literal\nCtrl+B  Browse op/Vault · Ctrl+P  Preview (opt-in) · Ctrl+N  Encrypted creation\n\nBROWSER\nType to filter     Enter  Select     Backspace  Parent\nEsc  Cancel browser, preserving your draft\n\nUsage: psst COMMAND [ARGS...] injects secrets in parallel.\n--copy NAME copies one; --write exports a private .env.\nManual secrets and .env files are plaintext.\nClipboard is not automatically cleared.\n\nEsc or Enter returns.").block(block(" Help ")).wrap(Wrap { trim: false }), chunks[1]);
         }
     }
     frame.render_widget(
@@ -1483,6 +1887,261 @@ mod tests {
                 assert_eq!(buffer[(label_x, row)].fg, Color::White);
             }
         }
+    }
+    fn creator(app: &mut App) {
+        app.view = View::Create(Creator {
+            editor: Editor::new(
+                None,
+                "KEY".into(),
+                Entry {
+                    source: "local-storage".into(),
+                    value: "id".into(),
+                },
+            ),
+            secret: Zeroizing::new(String::new()),
+            field: 2,
+            cursor: 0,
+            keys: vec![],
+            selected: 0,
+            chosen: None,
+            busy: false,
+            pending: None,
+        });
+    }
+    #[test]
+    fn encrypted_editor_preserves_exact_text_and_never_reveals() {
+        let mut app = app();
+        creator(&mut app);
+        for text in ["", " \n🔑\t", "PASTED_SECRET"] {
+            app.paste(text.into());
+        }
+        key(&mut app, KeyCode::Enter);
+        let expected = " \n🔑\tPASTED_SECRET\n";
+        assert!(matches!(&app.view, View::Create(c) if c.secret.as_str() == expected));
+        let (tx, _) = mpsc::unbounded_channel();
+        for code in ['r', 'p', 'b'] {
+            app.key(
+                KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL),
+                &tx,
+                &mut Tasks(vec![]),
+            );
+        }
+        assert!(!screen(&mut app).contains("PASTED_SECRET"));
+        app.paste("bad\0paste".into());
+        key(&mut app, KeyCode::Char('\0'));
+        assert!(app.error && app.status.contains("NUL rejected"));
+        assert!(matches!(&app.view, View::Create(c) if c.secret.as_str() == expected));
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Home);
+        key(&mut app, KeyCode::Delete);
+        assert!(matches!(&app.view, View::Create(c) if c.secret.as_str() == "\n🔑\tPASTED_SECRET"));
+        key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.view, View::Main));
+        assert!(!app.config.path.exists());
+    }
+    #[test]
+    fn encrypted_input_limit_is_exact_bytes_including_newline_and_paste() {
+        let mut app = app();
+        creator(&mut app);
+        app.paste("x".repeat(providers::local_storage::VALUE_LIMIT));
+        for code in [KeyCode::Enter, KeyCode::Char('é')] {
+            key(&mut app, code);
+        }
+        app.paste("extra".into());
+        assert!(app.error);
+        assert!(
+            matches!(&app.view, View::Create(c) if c.secret.len() == providers::local_storage::VALUE_LIMIT)
+        );
+        assert!(!screen(&mut app).contains("xxxxxxxx"));
+    }
+    #[test]
+    fn encrypted_identity_selection_errors_and_stale_listing() {
+        for count in [0, 1, 2] {
+            let mut app = app();
+            creator(&mut app);
+            let keys: Vec<_> = (0..count)
+                .map(|i| providers::Identity {
+                    fingerprint: format!("SHA256:key{i}"),
+                    token: vec![],
+                })
+                .collect();
+            app.message(Message::Identities {
+                generation: 0,
+                result: Ok(keys),
+            });
+            assert!(matches!(&app.view, View::Create(c) if c.chosen == (count == 1).then_some(0)));
+            if count == 2 {
+                if let View::Create(c) = &mut app.view {
+                    c.focus(3);
+                }
+                key(&mut app, KeyCode::Down);
+                key(&mut app, KeyCode::Enter);
+                assert!(matches!(&app.view, View::Create(c) if c.chosen == Some(1)));
+            }
+        }
+        let mut app = app();
+        creator(&mut app);
+        app.message(Message::Identities {
+            generation: 0,
+            result: Err(anyhow::anyhow!("SSH agent refused identity listing")),
+        });
+        assert!(app.error && app.status.contains("refused"));
+        key(&mut app, KeyCode::Esc);
+        creator(&mut app);
+        app.message(Message::Identities {
+            generation: 0,
+            result: Ok(vec![providers::Identity {
+                fingerprint: "old".into(),
+                token: vec![],
+            }]),
+        });
+        assert!(matches!(&app.view, View::Create(c) if c.keys.is_empty()));
+    }
+    struct TestSave {
+        path: std::path::PathBuf,
+        failure: Option<crate::config::WriteBoundary>,
+        replacing: bool,
+    }
+    impl providers::PreparedSave for TestSave {
+        fn replacing(&self) -> bool {
+            self.replacing
+        }
+        fn save(
+            self: Box<Self>,
+            _value: Zeroizing<String>,
+        ) -> futures::future::BoxFuture<'static, Result<String>> {
+            Box::pin(async move {
+                crate::config::atomic_write_checked(&self.path, b"complete ciphertext", |stage| {
+                    anyhow::ensure!(Some(stage) != self.failure, "Injected storage failure");
+                    Ok(())
+                })?;
+                Ok("id".into())
+            })
+        }
+    }
+    #[tokio::test]
+    async fn encrypted_creation_faults_report_actual_surviving_files() {
+        use crate::config::WriteBoundary;
+        let boundaries = [
+            WriteBoundary::Write,
+            WriteBoundary::FileSync,
+            WriteBoundary::Replace,
+            WriteBoundary::DirectorySync,
+        ];
+        for existing in [false, true] {
+            for stage in 0..2 {
+                for failure in boundaries {
+                    let mut app = app();
+                    creator(&mut app);
+                    let storage = app.config.dir().join("ciphertext");
+                    if existing {
+                        std::fs::write(&storage, b"old ciphertext").unwrap();
+                    }
+                    if let View::Create(c) = &mut app.view {
+                        c.pending = Some(Box::new(TestSave {
+                            path: storage.clone(),
+                            failure: (stage == 0).then_some(failure),
+                            replacing: existing,
+                        }));
+                    }
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+                    let mut tasks = Tasks(vec![]);
+                    app.save_creation(&tx, &mut tasks);
+                    let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    // Configuration is never written by the storage task.
+                    assert!(!app.config.path.exists());
+                    app.message_checked(message, |boundary| {
+                        anyhow::ensure!(
+                            stage != 1 || boundary != failure,
+                            "Injected config failure"
+                        );
+                        Ok(())
+                    });
+                    let storage_changed = stage == 1 || failure == WriteBoundary::DirectorySync;
+                    let config_changed = stage == 1 && failure == WriteBoundary::DirectorySync;
+                    assert_eq!(app.config.path.exists(), config_changed);
+                    assert_eq!(app.config.entries.contains_key("KEY"), config_changed);
+                    assert_eq!(
+                        std::fs::read(&storage).ok(),
+                        if storage_changed {
+                            Some(b"complete ciphertext".to_vec())
+                        } else if existing {
+                            Some(b"old ciphertext".to_vec())
+                        } else {
+                            None
+                        }
+                    );
+                    assert!(app.error);
+                    if stage == 0 {
+                        assert!(app.status.contains(if storage_changed {
+                            "Ciphertext replaced but durability uncertain"
+                        } else {
+                            "Ciphertext unchanged"
+                        }));
+                    } else {
+                        assert!(app.status.contains(if config_changed {
+                            "Ciphertext and configuration replaced"
+                        } else {
+                            "Ciphertext saved; configuration unchanged"
+                        }));
+                    }
+                    // Failure leaves a usable UI, with truthful loaded state.
+                    key(&mut app, KeyCode::Esc);
+                    key(&mut app, KeyCode::Char('a'));
+                    assert!(matches!(app.view, View::Editor(_)));
+                }
+            }
+        }
+    }
+    #[tokio::test]
+    async fn encrypted_cancelled_save_reports_completed_storage_without_touching_new_draft() {
+        let mut app = app();
+        creator(&mut app);
+        let storage = app.config.dir().join("ciphertext");
+        if let View::Create(c) = &mut app.view {
+            c.pending = Some(Box::new(TestSave {
+                path: storage.clone(),
+                failure: None,
+                replacing: false,
+            }));
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tasks = Tasks(vec![]);
+        app.save_creation(&tx, &mut tasks);
+        let message = rx.recv().await.unwrap();
+        key(&mut app, KeyCode::Esc);
+        creator(&mut app);
+        app.paste("NEW_DRAFT".into());
+        app.message(message);
+        assert!(storage.exists());
+        assert!(!app.config.path.exists());
+        assert!(
+            app.status
+                .contains("ciphertext was saved; configuration unchanged")
+        );
+        assert!(matches!(&app.view, View::Create(c) if c.secret.as_str() == "NEW_DRAFT"));
+    }
+    #[test]
+    fn replacement_requires_y_and_can_be_declined_without_writes() {
+        let mut app = app();
+        creator(&mut app);
+        let storage = app.config.dir().join("ciphertext");
+        if let View::Create(c) = &mut app.view {
+            c.pending = Some(Box::new(TestSave {
+                path: storage.clone(),
+                failure: None,
+                replacing: true,
+            }));
+        }
+        assert!(screen(&mut app).contains("ALL references"));
+        key(&mut app, KeyCode::Enter);
+        assert!(!storage.exists());
+        key(&mut app, KeyCode::Char('n'));
+        assert!(matches!(&app.view, View::Create(c) if c.pending.is_none()));
+        assert!(!storage.exists() && !app.config.path.exists());
     }
     #[test]
     fn unicode_editing() {
