@@ -5,7 +5,7 @@ description: Implement a spec through its tickets in a dedicated worktree, using
 
 # Implement
 
-Keep the parent agent an orchestrator. Do not implement tickets in its context. Use ordinary Git and the Pi CLI; no extension, SDK, or runner script is needed.
+Keep the parent agent an orchestrator. Do not implement tickets in its context. Use ordinary Git for worktrees and the project-local `.pi/extensions/subagent.ts` tools for child processes. Do not generate launcher or monitoring scripts.
 
 This workflow authorizes implementation, ticket lifecycle updates, and automatic review fixes. Review scopes supplied by this workflow are preauthorized: do not ask for scope or fix confirmation. Review children are explicitly report-only; the fix child applies their findings afterward. This overrides the review skills' usual immediate-fix exception for `implement`. Stop for ambiguous requirements, conflicting instructions, or unsafe operations rather than guessing.
 
@@ -16,7 +16,7 @@ Use two-axis review: spec correctness and coding standards get independent paral
 - Use the supplied spec in `docs/specs/`. Otherwise, inspect specs and their linked ticket sets: a spec is pending if it has no tickets or any ticket is not `done`. Default to the only pending spec; if there are several, use `ask_user_question` for a quick selection (offer a typed path if needed). If none are pending, report that and stop.
 - Read the selected spec and [documentation-model](../documentation-model/SKILL.md), including [TICKET-FORMAT.md](../documentation-model/TICKET-FORMAT.md). Repository paths below are relative to the repository root.
 - Find tickets under `docs/tickets/` by their source links, not just directory names. Read the complete set. Require defined acceptance criteria and verification, valid dependencies, and coverage of the spec. If tickets are missing or incomplete, stop and suggest `/skill:to-tickets`; do not create them here.
-- Check that `pi` is available and that the spec, tickets, project instructions, and review skills exist at the current `HEAD`. Uncommitted versions will not appear in a new worktree: stop if required inputs differ from `HEAD`, without committing or copying them automatically. Leave unrelated source-worktree changes alone.
+- Check that `pi`, GNU `timeout`, and `ps` are available on Linux, and that `subagent_start`, `subagent_wait`, and `subagent_cancel` are loaded (use `/reload` after installing the extension). Check that the spec, tickets, project instructions, review skills, and `.pi/extensions/subagent.ts` exist at the current `HEAD`. Uncommitted versions will not appear in a new worktree: stop if required inputs differ from `HEAD`, without committing or copying them automatically. Leave unrelated source-worktree changes alone.
 
 ## 2. Isolate the work
 
@@ -37,40 +37,21 @@ Announce the spec, base commit, branch, worktree, and ticket order. Run all impl
 
 Process tickets sequentially in dependency order, breaking ties by ticket number. Skip verified `done` tickets. Start a ticket only when all its blockers are `done`; stop if there is no executable ticket while unfinished tickets remain.
 
-For every implementation, review, fix, or completion child, launch a fresh process in **JSON mode**, in the background, and monitor it as described below. Run the two review children in parallel as described in section 4. Do not use a single long blocking tool call or text print mode: `--print` alone hides live activity until the final answer.
+For every implementation, review, fix, or completion child, use `subagent_start` with the worktree's absolute `cwd`, a short self-contained `prompt`, and a role/ticket `label`. The extension launches a fresh background `pi --approve --mode json --no-session` process; `--approve` trusts this project's resources. Child processes cannot use this extension to delegate recursively. Run the two review children in parallel as described in section 4.
 
-`--approve` trusts this project's resources for the child process. Use `pi --approve --mode json --no-session "$prompt"`. Do not use `--continue`, `--resume`, `--session`, or `--fork`. Do not pass the parent transcript, previous child conversations, or implementation dumps. A new process with only a short task prompt is the context reset; compaction or an instruction to forget is not a substitute.
+Do not pass the parent transcript, previous child conversations, or implementation dumps. A new process with only a short task prompt is the context reset; compaction or an instruction to forget is not a substitute.
 
 ### Child monitoring and deadlines
 
-Use ordinary shell commands, not a new extension, SDK integration, or checked-in runner. Before launching, confirm `setsid` and GNU `timeout` are available (or a verified equivalent that isolates and terminates descendants); otherwise stop and report the monitoring prerequisite. Create a unique temporary log directory outside both worktrees for each child. Record its role, ticket, start time, deadline, PID/process group, JSONL event path, stderr path, and exit-status path. Announce the log location and deadline.
+Announce each returned child ID, log directory, and deadline. The extension creates private temporary logs outside the worktrees, verifies the isolated process group, continuously drains stdout/stderr, parses complete LF-terminated events, and retains exit evidence. `job.json`, `events.jsonl`, `stderr.log`, and `exit-status` remain available for inspection.
 
-For example, with `child_dir` already created using `mktemp -d`:
-
-```sh
-(
-  set +e
-  setsid timeout --signal=TERM --kill-after=10s 3600s \
-    sh -c 'cd "$1" && exec pi --approve --mode json --no-session "$2"' \
-    sh "$worktree" "$prompt" \
-    > "$child_dir/events.jsonl" 2> "$child_dir/stderr.log" &
-  child_pid=$!
-  printf '%s\n' "$child_pid" > "$child_dir/pid"
-  wait "$child_pid"
-  status=$?
-  printf '%s\n' "$status" > "$child_dir/exit-status"
-) < /dev/null > /dev/null 2>&1 &
-```
-
-The supervising shell must retain the exit status even on failure; do not let `errexit` skip that recording. Verify and record the actual isolated process group after launch rather than assuming a PID is always its group ID. Redirect output to files so it drains continuously; if using pipes instead, continuously consume stdout to avoid blocking Pi on a full pipe buffer. Keep stdout JSONL and stderr separate.
-
-- Poll every **30–60 seconds** with short tool calls, returning control to the parent between polls. Track the last event time, current tool and its start time, last completed action, retries/compaction, and exit status. Parse only complete LF-terminated JSON records, retaining any incomplete trailing record for the next poll; never load the whole event log into the parent context.
+- Call `subagent_wait` repeatedly with all active child IDs. Each call waits up to **40 seconds**, returning control to the parent with compact snapshots: active tools and durations, last completed tool, event silence, failure/retry/compaction counts, and exit evidence. No extra sleep or JSONL parser is needed. Aborting a wait does not cancel children.
 - Give the user a concise heartbeat at least every **60 seconds** while children run: role/ticket, elapsed time, current activity, last completed action, and time since the last event. Report both reviewers separately. Summarize tool metadata, not raw arguments, results, thinking, or potentially sensitive output. JSON events provide activity evidence, not proof of meaningful progress.
 - After **five minutes without events**, warn and inspect the owned process tree, stderr, and the last active command. A quiet build/test or provider wait is not automatically a hang. Report what is known; do not invent percentage completion. Continue monitoring a legitimate wait within its deadline. If investigation cannot establish useful activity, stop the child and report a suspected stall.
 - Detect repeated identical failures or repair loops even when events keep arriving. Stop on repeated attempts with no meaningful progress rather than treating log growth as success.
 - Enforce a **60-minute wall-clock limit per child** with OS-level `timeout`, not merely the harness tool's timeout. Required verification commands must also have finite timeouts within that budget. Do not silently extend deadlines or automatically restart a timed-out child. A different budget requires explicit user agreement before launch.
-- On deadline, cancellation, suspected stall, or workflow failure, terminate only the recorded, verified child process groups: send TERM, allow at most **10 seconds**, then KILL remaining members. Include both reviewers when abandoning a parallel review cycle. Confirm descendants have exited before any subsequent mutation or review; if cleanup cannot be confirmed, stop and report it. Never use broad `pkill pi` or kill unrelated processes. Keep logs and worktree changes for inspection; leave unfinished tickets unfinished.
-- On exit, read the recorded status, final assistant summary from completed JSON messages, and ticket evidence. `agent_end` may be followed by retries; `agent_settled` signals no remaining automatic work, but still wait for process exit. Missing exit evidence, malformed/truncated output, timeout (normally status `124`), forced termination, or incomplete reports are blockers, not passes. Report elapsed time, log paths, last activity, and the blocker; do not blindly retry.
+- On cancellation, suspected stall, or workflow failure, use `subagent_cancel` with the owned IDs. Include both reviewers when abandoning a parallel review cycle. The extension sends TERM, allows at most **10 seconds**, then sends KILL, and checks group cleanup, including after natural exit or deadline. If cleanup cannot be confirmed, stop before any subsequent mutation or review. Never use broad `pkill pi` or kill unrelated processes. Keep logs and worktree changes for inspection; leave unfinished tickets unfinished. Session shutdown/reload cancels children; handles do not survive restart, so do not reload during implementation.
+- On exit, read `subagent_wait`'s exit status, final assistant summary, and ticket evidence. `exited` means only that the process finished cleanly with a summary and settled event, not that its task passed; `blocked` requires investigation. Truncated summaries point to the full event log. `agent_end` may be followed by retries; the extension requires process exit and `agent_settled` before reporting a clean exit. Missing exit evidence, malformed/truncated output, timeout (normally status `124`), forced termination, or incomplete reports are blockers, not passes. Report elapsed time, log paths, last activity, and the blocker; do not blindly retry.
 
 For every child prompt, also request brief progress notes at phase boundaries (reading, implementation/fixes, verification, blocked/completed), and finite verification-command timeouts. These notes improve meaning but do not replace parent-side monitoring or deadlines.
 
