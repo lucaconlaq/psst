@@ -1,33 +1,15 @@
 # Rust Code Guidelines
 
-Our reference for writing and reviewing Rust in this repository, distilled page by
-page from the [official Rust Style Guide](https://doc.rust-lang.org/style-guide/index.html).
+Guidelines for writing and reviewing Rust code and Cargo manifests in this repository.
 Use the official default style and let `rustfmt` handle mechanical formatting.
 Spend review time on correctness and clarity, not hand-adjusted whitespace.
 
-This is a practical digest, not a replacement for every formatter edge case.
-The source links below resolve detailed questions. The official guide primarily
+The [official Rust Style Guide](https://doc.rust-lang.org/style-guide/index.html)
+provides context and is the fallback for style details not covered here. It primarily
 covers style; it is not a complete guide to API design, ownership, error handling,
 security, or testing. Repository-specific requirements are labeled separately.
 
-## Website map
-
-| Section | Source page | Main topics |
-| --- | --- | --- |
-| 1 | [Introduction](https://doc.rust-lang.org/style-guide/index.html) | Default style, whitespace, sorting, comments, attributes. |
-| 2 | [Items](https://doc.rust-lang.org/style-guide/items.html) | Imports, modules, functions, structs, enums, traits, implementations, generics. |
-| 3 | [Statements](https://doc.rust-lang.org/style-guide/statements.html) | Bindings, let-else, semicolons, statement macros. |
-| 4 | [Expressions](https://doc.rust-lang.org/style-guide/expressions.html) | Blocks, literals, calls, closures, operators, chains, control flow, patterns. |
-| 5 | [Types and Bounds](https://doc.rust-lang.org/style-guide/types.html) | References, pointers, tuples, function types, bounds, line breaks. |
-| 6 | [Other style advice](https://doc.rust-lang.org/style-guide/advice.html) | Expression-oriented code, naming, module paths. |
-| 7 | [Cargo.toml conventions](https://doc.rust-lang.org/style-guide/cargo.html) | Manifest layout, dependency tables, metadata. |
-| 8 | [Guiding principles and rationale](https://doc.rust-lang.org/style-guide/principles.html) | Readability, accessibility, consistency, small diffs. |
-| 9 | [Rust style editions](https://doc.rust-lang.org/style-guide/editions.html) | Style versions, migration, compatibility. |
-| 10 | [Nightly-only syntax](https://doc.rust-lang.org/style-guide/nightly.html) | Unstable formatting and frontmatter. |
-
-## 1. Formatting foundations
-
-Source: [Introduction](https://doc.rust-lang.org/style-guide/index.html).
+## RUST-1: Formatting foundations
 
 ### Whitespace and layout
 
@@ -88,9 +70,8 @@ or operations. Preserve semantics and deliberate logical groupings.
 struct SessionId(String);
 ```
 
-## 2. Items and module organization
+## RUST-2: Items and module organization
 
-Source: [Items](https://doc.rust-lang.org/style-guide/items.html).
 These rules also apply to items declared inside functions or other items.
 
 ### Imports and modules
@@ -204,9 +185,7 @@ where
   Under Rust 2024, foreign blocks use `unsafe extern "C" { ... }`.
 - Use braces around the full definition of a `macro_rules!` macro.
 
-## 3. Statements
-
-Source: [Statements](https://doc.rust-lang.org/style-guide/statements.html).
+## RUST-3: Statements
 
 - Write bindings as `let pattern: Type = expression;`, with no space before `;`.
 - Prefer single-line bindings. When wrapping, first try breaking after `=` and
@@ -236,9 +215,7 @@ fn print_name(name: Option<&str>) {
 }
 ```
 
-## 4. Expressions
-
-Source: [Expressions](https://doc.rust-lang.org/style-guide/expressions.html).
+## RUST-4: Expressions
 
 ### Blocks and closures
 
@@ -265,7 +242,7 @@ Source: [Expressions](https://doc.rust-lang.org/style-guide/expressions.html).
 - Multiline arrays are block-indented. For a repeating initializer, break after `;`.
 - Use consistent hexadecimal letter case throughout the project; never mix upper
   and lower case within a single hexadecimal literal. The guide chooses neither case.
-- Keep the unit literal `()` together; see the style-edition caveat in section 9.
+- Keep the unit literal `()` together; see the style-edition caveat in RUST-9.
 
 ### Operators, ranges, and indexing
 
@@ -288,7 +265,7 @@ Source: [Expressions](https://doc.rust-lang.org/style-guide/expressions.html).
 - Write `function(a, b)` and `value.method(a)` without spaces before `(` or around `.`.
 - Single-line calls have no trailing comma. Multiline calls normally have one
   argument per indented line and a trailing comma.
-- Keep no-argument calls as `function()`; see section 9 for edition behavior.
+- Keep no-argument calls as `function()`; see RUST-9 for edition behavior.
 - Format parsable macro arguments like their corresponding Rust constructs. The
   guide's macro-specific rules do not define arbitrary third-party macro syntax.
 - For multiline formatting macros, small arguments may share a line before or after
@@ -351,11 +328,9 @@ match name {
 
 The live guide also specifies let-chain layout. Let-chains are available in this
 project's Rust 1.88 minimum with edition 2024. Their detailed formatting remains
-in the linked source.
+in the official guide.
 
-## 5. Types and bounds
-
-Source: [Types and Bounds](https://doc.rust-lang.org/style-guide/types.html).
+## RUST-5: Types and bounds
 
 Use these forms without extra padding:
 
@@ -380,9 +355,7 @@ Use these forms without extra padding:
 - Format a precise capturing bound `use<...>` like a generic path segment; this is
   type-bound syntax, not an import declaration.
 
-## 6. Non-formatting conventions
-
-Source: [Other style advice](https://doc.rust-lang.org/style-guide/advice.html).
+## RUST-6: Non-formatting conventions
 
 ### Prefer expression-oriented code
 
@@ -411,9 +384,7 @@ expressions; do not compress complex logic merely to save lines.
 For reserved words, use a raw identifier (`r#type`) or trailing underscore (`type_`),
 not a deliberate misspelling. Avoid `#[path]` module annotations where possible.
 
-## 7. Cargo.toml conventions
-
-Source: [Cargo.toml conventions](https://doc.rust-lang.org/style-guide/cargo.html).
+## RUST-7: Cargo.toml conventions
 
 - Use the same 100-character line width and 4-space indentation as Rust code.
 - Start keys at the beginning of the line; use one space on each side of `=`.
@@ -444,9 +415,7 @@ serde_json = "1"
 
 `cargo fmt` does not format `Cargo.toml`; review manifest formatting separately.
 
-## 8. Principles for style decisions
-
-Source: [Guiding principles and rationale](https://doc.rust-lang.org/style-guide/principles.html).
+## RUST-8: Principles for style decisions
 
 Apply the guide's priorities in this order:
 
@@ -461,9 +430,7 @@ Apply the guide's priorities in this order:
 Readability outranks compactness. Consider how a change looks in a plain-text diff,
 compiler diagnostic, or search result, not just in your editor.
 
-## 9. Style editions and toolchain compatibility
-
-Source: [Rust style editions](https://doc.rust-lang.org/style-guide/editions.html).
+## RUST-9: Style editions and toolchain compatibility
 
 - A **language edition** controls language semantics; a **style edition** controls
   formatting conventions. They can be migrated separately.
@@ -486,9 +453,7 @@ adding personal formatting overrides. Resolve discrepancies with the repository
 formatter and the edition-appropriate source, not repeated manual edits. Treat
 minimum-version and style-edition upgrades as explicit changes.
 
-## 10. Nightly-only syntax
-
-Source: [Nightly-only syntax](https://doc.rust-lang.org/style-guide/nightly.html).
+## RUST-10: Nightly-only syntax
 
 This chapter has no formatting-stability guarantee. At review time it documents
 `frontmatter`: manifest-like content before comments and attributes, fenced by
@@ -503,7 +468,7 @@ this stable Rust project. This chapter is mapped for completeness, not permissio
 to use its syntax. Revisit the relevant stable chapter when a feature stabilizes,
 and check the project's minimum compiler before adopting it.
 
-## Repository engineering rules and review checklist
+## RUST-11: Repository engineering rules and review checklist
 
 These are project requirements, **not claims from the official Style Guide**:
 

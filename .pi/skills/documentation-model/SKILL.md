@@ -22,7 +22,7 @@ docs/
 └── tickets/<feature-slug>/NN-slug.md  # One vertical slice per file
 ```
 
-Load the relevant format on demand: [glossary](GLOSSARY-FORMAT.md), [architecture](ARCHITECTURE-FORMAT.md), [ideas](IDEA-FORMAT.md), [specs](SPEC-FORMAT.md), or [tickets](TICKET-FORMAT.md). These files are the authoritative naming, structure, and content rules.
+Load the relevant format on demand: [rules](RULES-FORMAT.md), [glossary](GLOSSARY-FORMAT.md), [architecture](ARCHITECTURE-FORMAT.md), [ideas](IDEA-FORMAT.md), [specs](SPEC-FORMAT.md), or [tickets](TICKET-FORMAT.md). These files are the authoritative naming, structure, and content rules.
 
 ## Documentation entry points
 
@@ -32,9 +32,9 @@ Root `AGENTS.md` must link to `docs/ARCHITECTURE.md`, `docs/GLOSSARY.md`, `READM
 
 ## Rules
 
-Keep coding and file-specific conventions in `docs/rules/`, separate from domain definitions and architecture. `docs/rules/index.md` must contain a table mapping file patterns to linked rule documents and their scope. Patterns apply throughout the repository; before changing or reviewing files, consult the index and read and follow all matching rules. Load only applicable rule documents.
+Keep coding and file-specific conventions in `docs/rules/`, separate from domain definitions and architecture. Follow [RULES-FORMAT.md](RULES-FORMAT.md) for the generic introduction and numbered rule headings. `docs/rules/index.md` must contain a table mapping file patterns to linked rule documents and their scope. Patterns apply throughout the repository; before changing or reviewing files, consult the index and read and follow all matching rules. Load only applicable rule documents.
 
-For Rust projects, map `*.rs` to `RUST.md`. Map `Cargo.toml` to the same document when it includes Cargo manifest conventions. Preserve existing guidelines when moving them into `docs/rules/`; update references rather than maintaining duplicate sources of truth. Create additional rule documents and table entries only when there are rules to write.
+Map each file pattern to the document containing its applicable rules. Multiple patterns may share a document when their conventions are covered together. Preserve existing guidelines when moving them into `docs/rules/`; update references rather than maintaining duplicate sources of truth. Create additional rule documents and table entries only when there are rules to write.
 
 ## Domain language
 
