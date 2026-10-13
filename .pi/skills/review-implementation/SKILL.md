@@ -3,7 +3,7 @@ name: review-implementation
 description: Check whether code correctly implements a spec or ticket. Use for implementation and acceptance-criteria reviews. Default to edited files and report only; confirm any user-defined file selection and an explicit request to fix findings immediately.
 ---
 
-Default to files with staged, unstaged, or non-ignored untracked changes without asking for confirmation. If there are no edits in the default scope, say so and stop. Accept any user-defined selection, not just a file, folder, whole project, or commit. For a non-default selection, resolve it to a concrete scope and use `ask_user_question` to confirm that scope before reviewing; stop if confirmation is declined or cancelled. 
+Default to files with staged, unstaged, or non-ignored untracked changes without asking for confirmation. If there are no edits in the default scope, say so and stop. Accept any user-defined selection, not just a file, folder, whole project, or commit. For a non-default selection, resolve it to a concrete scope and use `ask_user_question` to confirm that scope before reviewing; stop if confirmation is declined or cancelled. Exception: when invoked by the `implement` skill, its supplied scope and immediate fixes are preauthorized; announce the resolved scope and apply corrections without confirmation.
 
 First, inventory the selected scope and print a checklist of every file to review, including deleted paths. Identify excluded generated outputs, caches, and vendored code separately. Keep the checklist updated as each file is reviewed; review every listed file fully, never silently skip one, and do not claim completion while any remain unchecked. If blocked or interrupted, report checked/total counts and the remaining paths.
 
