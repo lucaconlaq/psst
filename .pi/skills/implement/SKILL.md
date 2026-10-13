@@ -1,13 +1,13 @@
 ---
 name: implement
-description: Implement a spec through its tickets in a dedicated worktree, using fresh implementation processes, independent parallel spec and rules reviewers, and automatic fixes. Use when asked to implement a spec or its ticket set.
+description: Implement a spec through its tickets in a dedicated worktree, using fresh implementation processes, independent parallel spec and rules reviewers, automatic fixes, and a commit for each verified ticket. Use when asked to implement a spec or its ticket set.
 ---
 
 # Implement
 
 Keep the parent agent an orchestrator. Do not implement tickets in its context. Use ordinary Git for worktrees and the project-local `.pi/extensions/subagent.ts` tools for child processes. Do not generate launcher or monitoring scripts.
 
-This workflow authorizes implementation, ticket lifecycle updates, and automatic review fixes. Review scopes supplied by this workflow are preauthorized: do not ask for scope or fix confirmation. Review children are explicitly report-only; the fix child applies their findings afterward. This overrides the review skills' usual immediate-fix exception for `implement`. Stop for ambiguous requirements, conflicting instructions, or unsafe operations rather than guessing.
+This workflow authorizes implementation, ticket lifecycle updates, automatic review fixes, and parent-created commits for verified tickets without additional confirmation. Follow the message conventions in [commit](../commit/SKILL.md); this workflow overrides that skill's per-commit confirmation requirement. Review scopes supplied by this workflow are preauthorized: do not ask for scope or fix confirmation. Review children are explicitly report-only; the fix child applies their findings afterward. This overrides the review skills' usual immediate-fix exception for `implement`. Stop for ambiguous requirements, conflicting instructions, or unsafe operations rather than guessing.
 
 Use two-axis review: spec correctness and coding standards get independent parallel reviewers, isolated from implementation and from each other. Keep their findings separate; passing one axis never compensates for failing the other. Use this project's review skills and rules, not an additional generic smell baseline.
 
@@ -31,11 +31,11 @@ git worktree add --detach "$worktree" "$base"
 git -C "$worktree" switch -c "$branch"
 ```
 
-Announce the spec, base commit, branch, worktree, and ticket order. Run all implementation and review processes with the worktree as their working directory. Do not modify the original worktree, commit, push, merge, or remove the new worktree automatically. Keep changes uncommitted so the review skills' default edited-file scope contains the accumulated implementation.
+Announce the spec, base commit, branch, worktree, and ticket order. Run all implementation and review processes with the worktree as their working directory. Do not modify the original worktree, push, merge, or remove the new worktree automatically. Commit each verified ticket on the dedicated branch as described below. Keep the original base commit fixed for every review so committed tickets remain in the accumulated implementation scope.
 
 ## 3. Fresh implementation process per ticket
 
-Process tickets sequentially in dependency order, breaking ties by ticket number. Skip verified `done` tickets. Start a ticket only when all its blockers are `done`; stop if there is no executable ticket while unfinished tickets remain.
+Process tickets sequentially in dependency order, breaking ties by ticket number. Skip verified, committed `done` tickets. If a completed ticket lacks its commit, reconcile that checkpoint before advancing. Start a ticket only when all its blockers are `done`; stop if there is no executable ticket while unfinished tickets remain.
 
 For every implementation, review, fix, or completion child, use `subagent_start` with the worktree's absolute `cwd`, a short self-contained `prompt`, and a role/ticket `label`. The extension launches a fresh background `pi --approve --mode json --no-session` process; `--approve` trusts this project's resources. Child processes cannot use this extension to delegate recursively. Run the two review children in parallel as described in section 4.
 
@@ -64,16 +64,22 @@ For each ticket, construct the implementation prompt with the spec path, ticket 
 
 Monitor implementation until it exits, then run the independent review cycle in section 4. After both axes pass, launch a fresh completion child to rerun required verification, check the ticket's acceptance criteria, record evidence, mark it `done`, and update newly unblocked tickets according to the lifecycle rules. If verification requires code changes, leave it `in-progress` and return to the review cycle after those changes.
 
-Every child must read project instructions, preserve unrelated work, and avoid launching children or committing, staging, pushing, merging, or changing requirements. The parent reads each child's exit status, summary, and ticket evidence before advancing. A zero exit status alone is not proof of completion. Stop on process failure, incomplete verification or review coverage, ambiguity, unresolved findings that cannot be safely fixed, or an unfinished ticket; report the worktree and blocker. Do not blindly retry or continue with dependents.
+After the parent verifies the completion child's evidence, and with no children active, commit the ticket before advancing:
+
+- Inspect Git status and diffs, including untracked files. Stage only the ticket's implementation, tests, documentation, review fixes, and lifecycle updates; exclude unrelated changes and secrets. Stop if the changes cannot be safely separated.
+- Inspect the staged diff, then create one Conventional Commit using the commit skill's message rules and naming the ticket path in the body. Do not amend earlier commits.
+- Verify success and that no ticket-owned changes remain uncommitted; report the hash and ticket. Stop on failure.
+
+Only the parent may stage and commit. Every child must read project instructions, preserve unrelated work, and avoid launching children or committing, staging, pushing, merging, or changing requirements. The parent reads each child's exit status, summary, and ticket evidence before advancing. A zero exit status alone is not proof of completion. Stop on process failure, incomplete verification or review coverage, ambiguity, unresolved findings that cannot be safely fixed, or an unfinished ticket; report the worktree and blocker. Do not blindly retry or continue with dependents.
 
 ## 4. Independent two-axis review cycle
 
 Once implementation or fixes have exited, launch **two fresh Pi processes in parallel** against the same unchanged worktree. Monitor both using section 3's polling, heartbeat, and deadline policy; capture their exit statuses and reports separately. Do not run any implementation, fix, completion, or mutating verification process while reviewers are active.
 
-Supply each reviewer only the spec path, ticket path (or complete ticket-set path for final review), base commit, scope, and its own brief. Do not pass implementation summaries, conversations, the other reviewer's report, or prior review findings. Reviewers reconstruct context from repository files and inspect the current accumulated staged, unstaged, and non-ignored untracked changes; `git diff "$base"` omits untracked files, so inventory those separately.
+Supply each reviewer only the spec path, ticket path (or complete ticket-set path for final review), base commit, scope, and its own brief. Do not pass implementation summaries, conversations, the other reviewer's report, or prior review findings. Reviewers reconstruct context from repository files. Use an explicit, preauthorized scope containing `git diff "$base"` paths, staged/unstaged paths, and non-ignored untracked files. This includes earlier committed tickets and current edits; never rely on the review skills' default edited-file scope.
 
-- **Spec reviewer:** Load `.pi/skills/review-implementation/SKILL.md`. For a ticket, review the default edited-file scope against that ticket and its source spec; distinguish earlier tickets' required work from scope creep. For final review, resolve and announce the complete spec implementation scope, including reused existing code and all accumulated edits, and check cross-ticket integration and every spec requirement. Report missing, partial, incorrect, or unrequested behavior with requirement citations and evidence.
-- **Rules reviewer:** Load `.pi/skills/review-rules/SKILL.md`. Review all accumulated edited files against applicable project rules. Report violations with rule citations and evidence. Do not perform the spec review.
+- **Spec reviewer:** Load `.pi/skills/review-implementation/SKILL.md`. For a ticket, review the explicit accumulated scope against that ticket and its source spec; distinguish earlier tickets' required work from scope creep. For final review, resolve and announce the complete spec implementation scope, including reused existing code and all accumulated edits, and check cross-ticket integration and every spec requirement. Report missing, partial, incorrect, or unrequested behavior with requirement citations and evidence.
+- **Rules reviewer:** Load `.pi/skills/review-rules/SKILL.md`. Review all files in the explicit accumulated scope against applicable project rules, including earlier committed tickets. Report violations with rule citations and evidence. Do not perform the spec review.
 
 Both briefs must explicitly say: scope is preauthorized, **report only**, do not apply the review skill's immediate-fix exception, do not edit files or ticket statuses, do not run mutating commands or tests, and do not launch children. Include each skill's required file checklist, coverage limits, actionable findings, and a clear pass or blocker. Verification runs serially outside review; reviewers may inspect existing test evidence and test code but must not treat passing tests as proof of correctness.
 
@@ -85,6 +91,6 @@ After fixes, repeat **both reviews in new processes**, with no prior reports in 
 
 After every ticket is verified `done`, run section 4 again with the complete spec and ticket set. The final Spec and Rules reviewers must be separate fresh processes, not a shared final-review context.
 
-When both final axes pass, launch a fresh completion child to run required spec-level checks and reconcile all ticket criteria, statuses, and verification evidence. Do not leave `done` claims for unmet criteria. If code or tests change, repeat both final reviews before claiming completion.
+When both final axes pass, launch a fresh completion child to run required spec-level checks and reconcile all ticket criteria, statuses, and verification evidence. Do not leave `done` claims for unmet criteria. If code or tests change, repeat both final reviews before claiming completion. Commit remaining spec-level fixes and completion evidence using the same checkpoint procedure; skip the commit if there are no changes.
 
-Report completion only when all tickets remain verified `done`, both final reviews are complete, and required checks pass with no unresolved findings. Otherwise report partial completion and blockers. End with separate Spec and Rules results, the branch, worktree path, and concise verification summary; leave the worktree available for inspection.
+Report completion only when all tickets remain verified `done`, both final reviews are complete, and required checks pass with no unresolved findings. Otherwise report partial completion and blockers. End with separate Spec and Rules results, ticket commit hashes and any final checkpoint hash, the branch, worktree path, and concise verification summary; leave the worktree available for inspection. Do not claim completion while implementation or completion evidence remains uncommitted.
