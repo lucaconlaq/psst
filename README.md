@@ -4,7 +4,7 @@
   <img src="./.github/logo.png" alt="psst logo" width="200" />
 </p>
 
-A secret management tool that helps you manage and inject secrets into your environment. Supports [1Password CLI](https://developer.1password.com/docs/cli/), [Vault](https://developer.hashicorp.com/vault), [Terraform](https://developer.hashicorp.com/terraform) outputs, shell commands, and manual values. All providers are available by default.
+A secret management tool that helps you manage and inject secrets into your environment. Supports [1Password CLI](https://developer.1password.com/docs/cli/), [Vault](https://developer.hashicorp.com/vault), [Terraform](https://developer.hashicorp.com/terraform) outputs, shell commands, and manual values. Experimental `local-storage` adds SSH-agent-backed encrypted local values. All providers are available by default.
 
 **2.0.0-alpha.3 is a complete rewrite in Rust** of the original npm-distributed JavaScript/TypeScript application. This is an alpha prerelease: development and testing will continue through alpha and beta prereleases before the stable **2.0.0** release.
 
@@ -26,8 +26,12 @@ psst
 
 Experimental encrypted local values can be created by selecting `local-storage`
 in the editor and pressing `Ctrl+N`. See the [local-storage contract and TUI
-instructions](docs/local-storage-v1.md); real 1Password compatibility and
-independent crypto/format review remain outstanding.
+instructions](docs/local-storage-v1.md) for setup, reuse, updates, deletion and
+recovery. This feature is **not release-ready or production-approved**: the
+[acceptance matrix and unmet gates](docs/local-storage-readiness.md) distinguish
+fake-agent evidence from outstanding platform, live 1Password, and independent
+crypto/format checks. Any `local-storage` resolution failure stops wrapped-command
+launch and `.env` export; legacy provider failures still warn and are omitted.
 
 ### Run Commands with Secrets
 
@@ -37,7 +41,7 @@ Run any command with your secrets injected into its environment:
 psst <any command>
 ```
 
-Secrets are fetched concurrently, except that 1Password reads (`op` and `op 2FA`) share a queue to avoid racing authentication. Authentication remains managed by the 1Password CLI; psst does not cache authentication tokens.
+Secrets are fetched concurrently, except that 1Password reads (`op` and `op 2FA`) share a queue to avoid racing authentication. Local-storage SSH-agent signing is also serialized, with operation-local deduplication of identical records. Authentication for `op` remains managed by the 1Password CLI; psst does not cache authentication tokens.
 
 Status messages and diagnostics go to stderr, keeping command stdout clean. On a terminal, status messages are green, warnings yellow, and errors red. Set `NO_COLOR` to disable colors; redirected stderr and `TERM=dumb` also use plain text.
 

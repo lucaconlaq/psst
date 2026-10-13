@@ -6,6 +6,49 @@ reuse, updates, and optional ciphertext deletion.
 There is no storage-management CLI. No real integration is advertised as
 tested: only the deterministic fake Unix agent has been exercised. Independent
 crypto/format review and consented Linux/macOS 1Password checks remain outstanding.
+Experimental labeling does not waive the other release gates: this feature is
+**not release-ready or production-approved**. See the [acceptance matrix and
+verification record](local-storage-readiness.md).
+
+## Setup (target integration, not verified compatibility)
+
+On Linux or macOS, preserve an **Ed25519 SSH Key item in 1Password**. Generate it
+inside 1Password (New Item → SSH Key → Generate New Key → Ed25519), keep it in an
+agent-eligible vault, and enable Use the SSH Agent in Developer settings. Do not
+export its private key or fetch an encryption key using `op`. psst does not need
+the public key uploaded to an SSH server. Consult the current [1Password setup
+instructions](https://developer.1password.com/docs/ssh/get-started/) and
+[eligible-key rules](https://developer.1password.com/docs/ssh/agent/); Linux
+Flatpak/Snap installations currently do not provide that agent.
+
+Explicitly select the socket in the shell running psst; `IdentityAgent` in SSH
+configuration alone does not configure psst:
+
+```sh
+# Linux: confirm this is your intended 1Password endpoint first.
+export SSH_AUTH_SOCK="$HOME/.1password/agent.sock"
+# macOS: use this instead of the Linux assignment.
+export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+```
+
+These vendor-documented paths are examples, not detection or proof of custody.
+Compatible deterministic Ed25519 agents are allowed without vendor checks; no
+real agent is advertised as tested. psst never discovers or starts an agent.
+Configure per-request confirmation where possible, and approve only a process
+and key you trust. Prompt frequency depends on agent settings; creation signs
+the same challenge twice, while each decrypt signs once. This is not necessarily
+one prompt per command or mapping. Do not forward an agent to untrusted hosts or
+processes; psst does not guarantee forwarded-agent detection.
+
+Ciphertext JSON is suitable for committing; configuration holds references, not
+these encrypted values. Public keys, fingerprints, IDs, lengths and record presence
+remain visible. Do not mistake manual literals, command environments, clipboard
+contents or `.env` exports for encrypted storage. Git does not preserve private
+file modes: after a trusted checkout, deliberately set `.psst` and
+`.psst/local-storage` directories to 0700 and ciphertext JSON files to 0600
+(and existing lock files to 0600). Inspect paths first; do not follow symlinks or
+recursively change permissions on unrelated files. psst refuses insecure existing
+storage rather than silently repairing it. New storage uses private modes.
 
 ## Runtime use (experimental)
 
@@ -253,6 +296,56 @@ settings). Metadata is visible. Losing the SSH key loses decryptability; manual
 migration must occur while the old key works. Rotation does not revoke old Git
 history or captured keys. No replay/rollback protection or metadata hiding is claimed.
 
+## Recovery and manual migration
+
+Keep the SSH Key item recoverable in 1Password for as long as any current or
+historical ciphertext is needed. Losing the key loses decryptability; repository
+backups alone cannot recover plaintext. Never remove the old key before checking
+the new records.
+
+While the old key still works, deliberately retrieve the old value, create a new
+`(ID,new key)` record through the masked TUI, and update each affected mapping to
+the new fingerprint as needed. If both keys have that ID loaded, references must
+select explicitly; there is no automatic migration or identity fallback. Use a
+trusted environment for any plaintext transfer, clear clipboard/export artifacts,
+and verify the new mapping in a fresh operation before retiring the old mapping.
+Old records can then be removed by explicitly selected TUI deletion if desired.
+Rotation cannot revoke old Git history or signatures/derived keys retained by an
+authorized process. Valid-history replay/rollback and metadata visibility are
+accepted limitations, not detected attacks.
+
+### Conflicts and partial failures
+
+On a loaded-content conflict or lock error, do not overwrite the competing edit:
+close/reload the configuration and reopen the draft to load current snapshots,
+then deliberately reapply the intended change. Read the full failure details
+(PgUp/PgDn); an error does not necessarily mean nothing changed.
+
+| Outcome | Recovery |
+| --- | --- |
+| Creation/update storage failure before replacement | Configuration is not saved; reload and retry only after resolving the cause. |
+| Ciphertext replaced, sync or post-write reference validation fails | Ciphertext may already serve existing references; configuration is not saved. Inspect actual records and durability warning before retrying. |
+| Storage saved, configuration fails before replacement | Unused ciphertext may remain, or existing references may already use the update. Reload and reuse the record with Ctrl+U, or deliberately remove it later. |
+| Configuration replaced, directory sync fails | The mapping change occurred but durability is uncertain. Reload/verify after resolving the filesystem error; do not assume rollback. |
+| Deletion configuration failure before replacement | Mapping and ciphertext remain. Resolve the cause before retrying. |
+| Deletion configuration sync failure after replacement | Mapping was removed with uncertain durability; ciphertext is conservatively kept. |
+| Mapping removed, ciphertext removal fails | Ciphertext stays unless replacement already completed; post-replacement errors report removal with uncertain durability. Other references may still need the record. |
+
+There is no cross-file rollback. No orphan scan or automatic cleanup is performed.
+To remove a retained record later, reuse it in a temporary mapping (if resolvable),
+then explicitly delete that mapping with record removal; do not edit encrypted JSON
+by hand or delete all users' records. Verify whether any other mappings still use
+it, including configurations outside the loaded file that psst cannot discover.
+
+## Excluded management features
+
+No noninteractive or bare storage-management commands, standalone store browser,
+management import/export, automated orphan cleanup/migration/rotation, recovery
+recipients, multi-recipient sharing, other key types, private-key reads, encryption
+keys fetched via `op`, custom primitives/plugins, agent discovery/startup/retries,
+Windows support, or changes to legacy provider failure policy are added. Existing
+runtime `.env` export is not management export.
+
 ## Selected dependencies and security checks
 
 Selected established stable RustCrypto/Dalek releases are locked in Cargo.lock:
@@ -264,7 +357,9 @@ major versions. Direct `aes 0.8.4`, `ghash 0.5.1`, and `polyval 0.6.2` dependenc
 only enable cleanup features on AES-GCM's existing dependency graph. Existing
 `data-encoding` supplies canonical base64/hex. No SSH/encryption executable is used.
 
-Library-source/API and published-security checks during implementation:
+Historical selected-library checks from ticket 01 (not a current full advisory
+review; bounded fresh source checks are recorded in the
+[readiness record](local-storage-readiness.md)):
 
 - [AES-GCM security notes](https://docs.rs/aes-gcm/0.10.3/aes_gcm/) describe the NCC
   audit and constant-time-multiplication platform caveat. That library audit is

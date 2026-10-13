@@ -166,11 +166,17 @@ async fn failures_stop_all_consumers_before_launch_or_export() {
         Fault::EmptyFrame,
         Fault::InvalidIdentity,
         Fault::DuplicateIdentity,
+        Fault::ExcessIdentities,
     ] {
         agent.fault(fault);
         fail_stop(&cfg, caller.path(), Some(&agent)).await;
     }
     agent.fault(Fault::None);
+    agent.delay();
+    let before = agent.signs();
+    fail_stop(&cfg, caller.path(), Some(&agent)).await;
+    assert_eq!(agent.signs(), before + 4);
+    agent.release();
     let storage = dir.path().join(".psst/local-storage");
     let renamed = dir.path().join("storage");
     fs::rename(&storage, &renamed).unwrap();
