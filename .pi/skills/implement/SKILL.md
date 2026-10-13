@@ -46,7 +46,18 @@ Do not pass the parent transcript, previous child conversations, or implementati
 Announce each returned child ID, log directory, and deadline. The extension creates private temporary logs outside the worktrees, verifies the isolated process group, continuously drains stdout/stderr, parses complete LF-terminated events, and retains exit evidence. `job.json`, `events.jsonl`, `stderr.log`, and `exit-status` remain available for inspection.
 
 - Call `subagent_wait` repeatedly with all active child IDs. Each call waits up to **40 seconds**, returning control to the parent with compact snapshots: active tools and durations, last completed tool, event silence, failure/retry/compaction counts, and exit evidence. No extra sleep or JSONL parser is needed. Aborting a wait does not cancel children.
-- Give the user a concise heartbeat at least every **60 seconds** while children run: role/ticket, elapsed time, current activity, last completed action, and time since the last event. Report both reviewers separately. Summarize tool metadata, not raw arguments, results, thinking, or potentially sensitive output. JSON events provide activity evidence, not proof of meaningful progress.
+- Give the user a concise ticket-progress summary at least every **60 seconds** while children run and whenever a ticket completes or its stage changes. Record each ticket's start time when work begins; elapsed time covers the whole ticket, including reviews, fixes, verification, and committing, and never resets at stage or child boundaries. Display durations as `MM:SS` (or `HH:MM:SS` after an hour). Mark completion and freeze its duration only after verification and a successful commit. Do not invent durations for tickets completed before this run.
+- Use this format, listing tickets completed in this run, the active ticket's stage and total elapsed time, and the count of unfinished tickets excluding the active ticket:
+
+  ```text
+  Ticket 01 completed in 06:12
+  Ticket 02 completed in 08:45
+  Ticket 03 — verification — 10:32 elapsed
+  4 tickets remaining after this one
+  ```
+
+  Use stages such as implementation, verification, review (Spec: running/passed; Rules: running/passed), fixes, and committing. Derive stages from workflow state and explicit child progress notes, not guesses about shell activity. After the last ticket, report final spec review/verification separately; ticket completion does not imply spec completion.
+- Keep routine summaries free of last-tool details, event-silence counters, and incidental tool-error counts. Continue inspecting that metadata internally; report it only for actionable errors, suspected stalls, deadlines, or blockers. Never expose raw arguments, results, thinking, or potentially sensitive output. JSON events provide activity evidence, not proof of meaningful progress.
 - After **five minutes without events**, warn and inspect the owned process tree, stderr, and the last active command. A quiet build/test or provider wait is not automatically a hang. Report what is known; do not invent percentage completion. Continue monitoring a legitimate wait within its deadline. If investigation cannot establish useful activity, stop the child and report a suspected stall.
 - Detect repeated identical failures or repair loops even when events keep arriving. Stop on repeated attempts with no meaningful progress rather than treating log growth as success.
 - Enforce a **60-minute wall-clock limit per child** with OS-level `timeout`, not merely the harness tool's timeout. Required verification commands must also have finite timeouts within that budget. Do not silently extend deadlines or automatically restart a timed-out child. A different budget requires explicit user agreement before launch.
