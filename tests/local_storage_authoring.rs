@@ -329,6 +329,173 @@ async fn author_listing_worker() {
     assert!(!root.join("psst.json").exists());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reuse_failures_never_rewrite_existing_ciphertext() {
+    for mode in [
+        "success", "refuse", "timeout", "queued", "cancel", "absent", "missing", "locked",
+        "conflict",
+    ] {
+        for operation in ["reuse", "update"] {
+            if operation == "update" && matches!(mode, "success" | "missing") {
+                continue;
+            }
+            let fake = support::agent::FakeAgent::new().await;
+            let root = std::env::temp_dir().canonicalize().unwrap();
+            let dir = tempfile::tempdir_in(root).unwrap();
+            StoredKey::load(dir.path(), fake.key.clone())
+                .unwrap()
+                .set(&fake.client, "id", "EXACT_SECRET")
+                .await
+                .unwrap();
+            let path = dir
+                .path()
+                .join(".psst/local-storage")
+                .join(fake.key.filename());
+            let before = std::fs::read(&path).unwrap();
+            let initial_signs = fake.signs();
+            match mode {
+                "refuse" => fake.fault(support::agent::Fault::Refuse),
+                "timeout" | "queued" | "cancel" => fake.delay(),
+                "absent" => fake.state.identities.lock().unwrap().clear(),
+                _ => {}
+            }
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .env_remove("SSH_AUTH_SOCK")
+                .env("SSH_AUTH_SOCK", fake.socket())
+                .env("PSST_TIMEOUT", "1")
+                .env("PSST_TEST_REUSE_ROOT", dir.path())
+                .env("PSST_TEST_REUSE_MODE", mode)
+                .env("PSST_TEST_AUTHOR_OPERATION", operation)
+                .env(
+                    "PSST_TEST_REUSE_KEY",
+                    data_encoding::BASE64.encode(&fake.key.blob()),
+                )
+                .args(["--exact", "reuse_worker", "--nocapture"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let start = Instant::now();
+            loop {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                if start.elapsed() > Duration::from_secs(10) {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("Reuse worker exceeded finite budget: {mode}");
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let result = child.wait_with_output().unwrap();
+            assert!(
+                result.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            let signs = fake.signs() - initial_signs;
+            // Queued mode includes one request from the independently active phase.
+            assert!(
+                signs <= if mode == "queued" { 2 } else { 1 },
+                "No retry/fallback: {mode}"
+            );
+            if matches!(mode, "absent" | "missing" | "locked" | "conflict") {
+                assert_eq!(signs, 0);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn reuse_worker() {
+    use psst::providers::local_storage::PublicKey;
+    let Some(root) = std::env::var_os("PSST_TEST_REUSE_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let mode = std::env::var("PSST_TEST_REUSE_MODE").unwrap();
+    let key = PublicKey::from_blob(
+        &data_encoding::BASE64
+            .decode(std::env::var("PSST_TEST_REUSE_KEY").unwrap().as_bytes())
+            .unwrap(),
+    )
+    .unwrap();
+    let identity = Identity {
+        fingerprint: key.fingerprint(),
+        token: key.blob(),
+    };
+    let author = providers::get("local-storage").unwrap().author().unwrap();
+    let mismatched = format!("id#SHA256:{}", data_encoding::BASE64_NOPAD.encode(&[0; 32]));
+    assert!(author.prepare(&root, &mismatched, &identity).is_err());
+    let pending = author
+        .prepare(
+            &root,
+            if mode == "missing" { "missing" } else { "id" },
+            &identity,
+        )
+        .unwrap();
+    assert_eq!(pending.replacing(), mode != "missing");
+    assert!(pending.matches_reference(&format!("id#{}", key.fingerprint())) == (mode != "missing"));
+    let path = root.join(".psst/local-storage").join(key.filename());
+    let before = std::fs::read(&path).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path.with_extension("lock"))
+        .unwrap();
+    if mode == "locked" {
+        fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    }
+    if mode == "conflict" {
+        std::fs::write(&path, b"concurrent edit").unwrap();
+    }
+    let active = if mode == "queued" {
+        let agent = Agent::from_env().unwrap();
+        let key = key.clone();
+        let task =
+            tokio::spawn(async move { Envelope::encrypt(&agent, &key, "active", "value").await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Some(task)
+    } else {
+        None
+    };
+    let start = Instant::now();
+    let task = tokio::spawn(
+        if std::env::var("PSST_TEST_AUTHOR_OPERATION").unwrap() == "update" {
+            pending.save(Zeroizing::new("REPLACEMENT_SECRET".into()))
+        } else {
+            pending.reuse()
+        },
+    );
+    if mode == "cancel" {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    } else {
+        let result = task.await.unwrap();
+        if mode == "success" {
+            assert_eq!(result.unwrap(), "id");
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.downcast_ref::<PersistenceError>().is_none());
+            if matches!(mode.as_str(), "timeout" | "queued") {
+                assert!(error.to_string().contains("timed out"));
+                assert!(start.elapsed() < Duration::from_millis(1600));
+            }
+        }
+    }
+    if let Some(active) = active {
+        assert!(active.await.unwrap().is_err());
+    }
+    if mode == "conflict" {
+        assert_eq!(std::fs::read(&path).unwrap(), b"concurrent edit");
+        std::fs::write(&path, &before).unwrap(); // Restore only our injected edit.
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(!root.join("psst.json").exists());
+}
+
 #[tokio::test]
 async fn author_deadline_worker() {
     let Some(root) = std::env::var_os("PSST_TEST_AUTHOR_ROOT") else {

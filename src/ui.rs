@@ -251,6 +251,7 @@ enum Message {
         result: Result<Vec<providers::Identity>>,
     },
     Created {
+        reused: bool,
         generation: u64,
         name: String,
         original: Option<String>,
@@ -287,6 +288,8 @@ struct App {
     loading: HashSet<String>,
     status: String,
     error: bool,
+    error_panel: bool,
+    error_scroll: u16,
     generation: u64,
     busy_copy: bool,
 }
@@ -304,6 +307,8 @@ impl App {
             loading: HashSet::new(),
             status: "Secrets stay masked until you ask. Fetches run in parallel.".into(),
             error: false,
+            error_panel: false,
+            error_scroll: 0,
             generation: 0,
             busy_copy: false,
         }
@@ -323,6 +328,8 @@ impl App {
     fn status(&mut self, message: impl Into<String>, error: bool) {
         self.status = message.into();
         self.error = error;
+        self.error_panel = error;
+        self.error_scroll = 0;
     }
     fn invalidate(&mut self) {
         self.generation += 1;
@@ -442,7 +449,12 @@ impl App {
             }),
         );
     }
-    fn prepare_creation(&mut self, tx: &mpsc::UnboundedSender<Message>, tasks: &mut Tasks) {
+    fn prepare_creation(
+        &mut self,
+        tx: &mpsc::UnboundedSender<Message>,
+        tasks: &mut Tasks,
+        reuse: bool,
+    ) {
         let View::Create(c) = &mut self.view else {
             return;
         };
@@ -472,9 +484,18 @@ impl App {
         match author.prepare(self.config.dir(), &c.editor.value, key) {
             Ok(pending) => {
                 let replacing = pending.replacing();
+                if reuse && !replacing {
+                    self.status(
+                        "No existing record for selected ID and key; nothing reused.",
+                        true,
+                    );
+                    return;
+                }
                 c.pending = Some(pending);
-                if replacing {
-                    self.status("Replace ciphertext? Updates affect ALL references to this record. y confirms; n cancels.", true);
+                if reuse {
+                    self.save_record(tx, tasks, true);
+                } else if replacing {
+                    self.status("Replace ciphertext? Updates affect ALL references to this record. y confirms; n cancels.", false);
                 } else {
                     self.save_creation(tx, tasks);
                 }
@@ -483,6 +504,14 @@ impl App {
         }
     }
     fn save_creation(&mut self, tx: &mpsc::UnboundedSender<Message>, tasks: &mut Tasks) {
+        self.save_record(tx, tasks, false);
+    }
+    fn save_record(
+        &mut self,
+        tx: &mpsc::UnboundedSender<Message>,
+        tasks: &mut Tasks,
+        reused: bool,
+    ) {
         let View::Create(c) = &mut self.view else {
             return;
         };
@@ -497,15 +526,24 @@ impl App {
         let generation = self.generation;
         let tx = tx.clone();
         self.status(
-            "Saving ciphertext… Esc cancels unfinished work, not completed writes.",
+            if reused {
+                "Verifying existing ciphertext… Esc cancels unfinished work."
+            } else {
+                "Saving ciphertext… Esc cancels unfinished work, not completed writes."
+            },
             false,
         );
         tasks.push(
             generation,
             tokio::spawn(async move {
-                let result = pending.save(value).await;
+                let result = if reused {
+                    pending.reuse().await
+                } else {
+                    pending.save(value).await
+                };
                 // No await between replacement completion and reporting it.
                 let _ = tx.send(Message::Created {
+                    reused,
                     generation,
                     name,
                     original,
@@ -534,13 +572,14 @@ impl App {
                             self.status("Masked exact text · Tab fields · Enter inserts newline in value · Ctrl+S saves.", false);
                         }
                         Ok(_) => {
-                            self.status("No eligible Ed25519 SSH agent keys. Esc cancels.", true)
+                            self.status("No eligible Ed25519 SSH agent keys. Esc cancels.", true);
                         }
                         Err(error) => self.status(error.to_string(), true),
                     }
                 }
             }
             Message::Created {
+                reused,
                 generation,
                 name,
                 original,
@@ -557,22 +596,24 @@ impl App {
                         if let Some(original) = original && original != name { entries.shift_remove(&original); }
                         entries.insert(name, Entry { source, value: reference });
                         match self.config.save_checked(entries, boundary) {
-                            Ok(()) => { self.main(); self.status("Saved encrypted value and configuration.", false); }
+                            Ok(()) => { self.main(); self.status(if reused { "Reused ciphertext; saved configuration." } else { "Saved encrypted value and configuration." }, false); }
                             Err(error) => {
                                 let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
-                                self.status(if changed {
+                                self.status(if reused {
+                                    format!("Ciphertext unchanged; configuration {}; {error}", if changed { "replaced but durability uncertain" } else { "unchanged" })
+                                } else if changed {
                                     format!("Ciphertext and configuration replaced; config durability uncertain: {error}")
                                 } else {
-                                    format!("Ciphertext saved; configuration unchanged; unused ciphertext may remain: {error}")
+                                    format!("Ciphertext saved; configuration unchanged; existing references may now resolve the updated value; unused ciphertext may remain: {error}")
                                 }, true);
                             }
                         }
                     }
-                    Ok(_) => self.status("Cancelled draft: ciphertext was saved; configuration unchanged. Completed writes were not undone.", true),
+                    Ok(_) => self.status(if reused { "Cancelled draft: ciphertext unchanged; configuration unchanged." } else { "Cancelled draft: ciphertext was saved; configuration unchanged. Completed writes were not undone." }, true),
                     Err(error) => {
                         let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
                         self.status(if changed {
-                            format!("Ciphertext replaced but durability uncertain; configuration unchanged: {error}")
+                            format!("Ciphertext replaced but durability uncertain; configuration unchanged; existing references may now resolve the updated value: {error}")
                         } else { format!("Ciphertext unchanged; configuration unchanged: {error}") }, true);
                     }
                 }
@@ -639,6 +680,19 @@ impl App {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return true;
+        }
+        if self.error_panel {
+            match key.code {
+                KeyCode::PageDown => {
+                    self.error_scroll = self.error_scroll.saturating_add(1);
+                    return false;
+                }
+                KeyCode::PageUp => {
+                    self.error_scroll = self.error_scroll.saturating_sub(1);
+                    return false;
+                }
+                _ => self.error_panel = false,
+            }
         }
         if matches!(self.view, View::Help) {
             if matches!(
@@ -762,7 +816,9 @@ impl App {
             }
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 if key.code == KeyCode::Char('s') {
-                    self.prepare_creation(tx, tasks);
+                    self.prepare_creation(tx, tasks, false);
+                } else if key.code == KeyCode::Char('u') {
+                    self.prepare_creation(tx, tasks, true);
                 }
                 return false;
             }
@@ -1117,6 +1173,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             View::Create(_) => &[
                 ("Tab", "fields"),
                 ("Ctrl+S", "save encrypted"),
+                ("Ctrl+U", "reuse existing"),
                 ("Enter", "newline / choose key"),
                 ("Esc", "cancel"),
             ],
@@ -1141,13 +1198,14 @@ fn draw(frame: &mut Frame, app: &mut App) {
     };
     let hints = shortcut_lines(actions, usize::from(area.width.saturating_sub(2)));
     let hint_height = hints.len() as u16;
+    let compact_creator = matches!(app.view, View::Create(_)) && area.height < 24;
     let chunks = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(3),
-        Constraint::Length(2),
+        Constraint::Length(if compact_creator { 1 } else { 3 }),
+        Constraint::Min(if compact_creator { 4 } else { 3 }),
+        Constraint::Length(if compact_creator { 1 } else { 2 }),
         Constraint::Length(hint_height),
     ])
-    .margin(1)
+    .margin(if compact_creator { 0 } else { 1 })
     .split(area);
     frame.render_widget(
         Paragraph::new(vec![
@@ -1239,15 +1297,27 @@ fn draw(frame: &mut Frame, app: &mut App) {
         }
         View::Create(c) => {
             let inner = block(" Create encrypted value · always masked ");
-            let body = inner.inner(chunks[1]);
-            frame.render_widget(inner, chunks[1]);
-            let fields = Layout::vertical([
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Min(1),
-            ])
-            .split(body);
+            let focused_only = chunks[1].height < 15;
+            let body = if focused_only {
+                chunks[1]
+            } else {
+                frame.render_widget(inner.clone(), chunks[1]);
+                inner.inner(chunks[1])
+            };
+            let fields = if focused_only {
+                let mut fields = vec![Rect::default(); 4];
+                fields[c.field] = body;
+                fields
+            } else {
+                Layout::vertical([
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Min(4),
+                ])
+                .split(body)
+                .to_vec()
+            };
             for (i, label) in [
                 "Environment name",
                 "Exact secret ID",
@@ -1256,6 +1326,9 @@ fn draw(frame: &mut Frame, app: &mut App) {
             .iter()
             .enumerate()
             {
+                if focused_only && c.field != i {
+                    continue;
+                }
                 let text = match i {
                     0 => clean(&c.editor.name),
                     1 => clean(&c.editor.value),
@@ -1268,35 +1341,45 @@ fn draw(frame: &mut Frame, app: &mut App) {
                     fields[i],
                 );
             }
-            let items: Vec<_> = c
-                .keys
-                .iter()
-                .enumerate()
-                .map(|(i, key)| {
-                    ListItem::new(format!(
-                        "{} {}",
-                        if c.chosen == Some(i) { "✓" } else { " " },
-                        key.fingerprint
-                    ))
-                })
-                .collect();
-            let mut state =
-                ListState::default().with_selected((!c.keys.is_empty()).then_some(c.selected));
-            frame.render_stateful_widget(
-                List::new(items)
-                    .block(
-                        block(" SSH fingerprint · ↑↓ then Enter to choose ").border_style(
-                            Style::default().fg(if c.field == 3 { ACCENT } else { MUTED }),
-                        ),
-                    )
-                    .highlight_style(Style::default().bg(PANEL)),
-                fields[3],
-                &mut state,
-            );
-            if c.pending.is_some() {
-                let popup = centered(area, 85, 7);
-                frame.render_widget(Clear, popup);
-                frame.render_widget(Paragraph::new("Replace existing ciphertext?\nUpdates affect ALL references to this (ID,key) record.\n\ny confirms replacement · n retains draft · Esc cancels").block(block(" Confirm replacement ")).wrap(Wrap { trim: false }), popup);
+            if !focused_only || c.field == 3 {
+                let fingerprint_width = usize::from(fields[3].width.saturating_sub(4)).max(1);
+                let items: Vec<_> = c
+                    .keys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, key)| {
+                        let text = format!(
+                            "{} {}",
+                            if c.chosen == Some(i) { "✓" } else { " " },
+                            key.fingerprint
+                        );
+                        let chars = text.chars().collect::<Vec<_>>();
+                        ListItem::new(
+                            chars
+                                .chunks(fingerprint_width)
+                                .map(|part| Line::from(part.iter().collect::<String>()))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+                let mut state =
+                    ListState::default().with_selected((!c.keys.is_empty()).then_some(c.selected));
+                frame.render_stateful_widget(
+                    List::new(items)
+                        .block(
+                            block(format!(
+                                " SSH key {}/{} · ↑↓ Enter chooses ",
+                                c.selected + usize::from(!c.keys.is_empty()),
+                                c.keys.len()
+                            ))
+                            .border_style(
+                                Style::default().fg(if c.field == 3 { ACCENT } else { MUTED }),
+                            ),
+                        )
+                        .highlight_style(Style::default().bg(PANEL)),
+                    fields[3],
+                    &mut state,
+                );
             }
         }
         View::Editor(e) => {
@@ -1418,7 +1501,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
         View::Help => {
-            frame.render_widget(Paragraph::new("YOUR SECRETS, YOUR TOOLS\n\n↑ / ↓  Select     Enter  Edit     a  Add     /  Search\nSpace  Reveal/hide (30 seconds)     c  Copy     Delete  Remove\nPgUp / PgDn  Scroll     q / Ctrl+C  Quit\n\nEDITOR\nTab / Shift+Tab  Fields     ← / →  Choose source or move cursor\nCtrl+S  Save     Esc  Discard     Ctrl+R  Show/hide literal\nCtrl+B  Browse op/Vault · Ctrl+P  Preview (opt-in) · Ctrl+N  Encrypted creation\n\nBROWSER\nType to filter     Enter  Select     Backspace  Parent\nEsc  Cancel browser, preserving your draft\n\nUsage: psst COMMAND [ARGS...] injects secrets in parallel.\n--copy NAME copies one; --write exports a private .env.\nManual secrets and .env files are plaintext.\nClipboard is not automatically cleared.\n\nEsc or Enter returns.").block(block(" Help ")).wrap(Wrap { trim: false }), chunks[1]);
+            frame.render_widget(Paragraph::new("YOUR SECRETS, YOUR TOOLS\n\n↑ / ↓  Select     Enter  Edit     a  Add     /  Search\nSpace  Reveal/hide (30 seconds)     c  Copy     Delete  Remove\nPgUp / PgDn  Scroll     q / Ctrl+C  Quit\n\nEDITOR\nTab / Shift+Tab  Fields     ← / →  Choose source or move cursor\nCtrl+S  Save     Esc  Discard     Ctrl+R  Show/hide literal\nCtrl+B  Browse op/Vault · Ctrl+P  Preview (opt-in) · Ctrl+N  Encrypted creation/update · Ctrl+U in masked editor reuses ciphertext\n\nBROWSER\nType to filter     Enter  Select     Backspace  Parent\nEsc  Cancel browser, preserving your draft\n\nUsage: psst COMMAND [ARGS...] injects secrets in parallel.\n--copy NAME copies one; --write exports a private .env.\nManual secrets and .env files are plaintext.\nClipboard is not automatically cleared.\n\nEsc or Enter returns.").block(block(" Help ")).wrap(Wrap { trim: false }), chunks[1]);
         }
     }
     frame.render_widget(
@@ -1428,10 +1511,74 @@ fn draw(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
     frame.render_widget(Paragraph::new(hints), chunks[3]);
+    if let View::Create(c) = &app.view
+        && c.pending.is_some()
+    {
+        let popup = centered(area, area.width.saturating_sub(2).min(85), 10);
+        frame.render_widget(Clear, popup);
+        let count = app
+            .config
+            .entries
+            .iter()
+            .filter(|(_, e)| {
+                e.source == c.editor.source
+                    && c.pending
+                        .as_ref()
+                        .is_some_and(|p| p.matches_reference(&e.value))
+            })
+            .count();
+        let warning = format!(
+            "Replace existing ciphertext?\nUpdates affect ALL references to this\n(ID,key) record.\nLoaded config only: {count}\npossible references.\ny replaces · n retains draft\nEsc cancels"
+        );
+        frame.render_widget(
+            Paragraph::new(warning)
+                .block(block(" Confirm replacement "))
+                .wrap(Wrap { trim: false }),
+            popup,
+        );
+    }
     if let Some(name) = &app.delete {
         let popup = centered(area, 60, 7);
         frame.render_widget(Clear, popup);
         frame.render_widget(Paragraph::new(format!("Delete {name}?\n\nThis removes the reference from this config.\nEnter / y delete · Esc / n cancel")).block(block(" Confirm deletion ").border_style(Style::default().fg(Color::LightRed))).wrap(Wrap { trim: false }), popup);
+    }
+    if app.error_panel {
+        let popup = centered(
+            area,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+        frame.render_widget(Clear, popup);
+        let panel = block(" Failure details ").border_style(Style::default().fg(Color::LightRed));
+        let body = panel.inner(popup);
+        frame.render_widget(panel, popup);
+        let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(body);
+        let details = Paragraph::new(clean(&app.status))
+            .style(Style::default().fg(Color::LightRed))
+            .wrap(Wrap { trim: false });
+        // Clamp scrolling using the renderer's wrapping, without unstable APIs.
+        let mut rendered = Buffer::empty(parts[0]);
+        loop {
+            rendered.reset();
+            details
+                .clone()
+                .scroll((app.error_scroll, 0))
+                .render(parts[0], &mut rendered);
+            if app.error_scroll == 0
+                || rendered
+                    .content
+                    .iter()
+                    .any(|cell| !cell.symbol().trim().is_empty())
+            {
+                break;
+            }
+            app.error_scroll -= 1;
+        }
+        frame.render_widget(details.scroll((app.error_scroll, 0)), parts[0]);
+        frame.render_widget(
+            Paragraph::new("PgUp/PgDn scroll details\nOther keys close and act normally"),
+            parts[1],
+        );
     }
 }
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -1606,6 +1753,39 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+    fn assert_narrow_failure_readable(app: &mut App) {
+        let mut terminal = Terminal::new(TestBackend::new(45, 12)).unwrap();
+        let mut text = String::new();
+        for offset in 0..200 {
+            app.error_scroll = offset;
+            terminal.draw(|f| draw(f, app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(screen_text(buffer).contains("PgUp/PgDn scroll details"));
+            let rows = if app.error_scroll < offset {
+                2..8
+            } else {
+                2..3
+            };
+            for y in rows {
+                for x in 3..42 {
+                    text.push_str(buffer[(x, y)].symbol());
+                }
+            }
+            if app.error_scroll < offset {
+                break;
+            }
+        }
+        let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert!(
+            compact(&text).contains(&compact(&clean(&app.status))),
+            "{text}"
+        );
+        key(app, KeyCode::PageUp);
+        assert!(app.error_panel);
+    }
+    fn screen_text(buffer: &Buffer) -> String {
+        buffer.content.iter().map(|cell| cell.symbol()).collect()
     }
     #[test]
     fn legacy_delete_d_y_and_cancel_d_n() {
@@ -1955,6 +2135,72 @@ mod tests {
         assert!(!screen(&mut app).contains("xxxxxxxx"));
     }
     #[test]
+    fn encrypted_focused_fields_and_full_fingerprints_at_supported_sizes() {
+        for (width, height) in [(45, 12), (45, 16), (55, 12), (80, 12), (45, 30), (120, 30)] {
+            let mut app = app();
+            creator(&mut app);
+            app.paste("NEVER_RENDER_THIS\n🔑 ".into());
+            let fingerprints = (0..8)
+                .map(|i| format!("SHA256:{}{i}", "a".repeat(42)))
+                .collect::<Vec<_>>();
+            app.message(Message::Identities {
+                generation: 0,
+                result: Ok(fingerprints
+                    .iter()
+                    .map(|fingerprint| providers::Identity {
+                        fingerprint: fingerprint.clone(),
+                        token: vec![],
+                    })
+                    .collect()),
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for field in 0..3 {
+                if let View::Create(c) = &mut app.view {
+                    c.focus(field);
+                }
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                let text = screen_text(terminal.backend().buffer());
+                assert!(
+                    text.contains(
+                        ["Environment name", "Exact secret ID", "Exact UTF-8 value"][field]
+                    ),
+                    "{width}×{height}: {text}"
+                );
+                assert!(!text.contains("NEVER_RENDER_THIS"));
+                assert!(text.contains("Ctrl+S") && text.contains("Ctrl+U") && text.contains("Esc"));
+                if field == 2 {
+                    assert!(text.contains(MASK));
+                }
+            }
+            key(&mut app, KeyCode::Tab);
+            for (index, fingerprint) in fingerprints.iter().enumerate() {
+                terminal.draw(|f| draw(f, &mut app)).unwrap();
+                let buffer = terminal.backend().buffer();
+                // Join the list interior across wrapped rows, excluding borders.
+                let mut interior = String::new();
+                for y in 0..height {
+                    for x in 2..width - 2 {
+                        let symbol = buffer[(x, y)].symbol();
+                        if !symbol.trim().is_empty() && symbol != "│" {
+                            interior.push_str(symbol);
+                        }
+                    }
+                }
+                assert!(
+                    interior.contains(fingerprint),
+                    "{width}×{height}, key {index}: {interior}"
+                );
+                assert!(matches!(&app.view, View::Create(c) if c.chosen == index.checked_sub(1)));
+                key(&mut app, KeyCode::Enter);
+                assert!(matches!(&app.view, View::Create(c) if c.chosen == Some(index)));
+                key(&mut app, KeyCode::Down);
+            }
+            assert!(
+                matches!(&app.view, View::Create(c) if c.secret.as_str() == "NEVER_RENDER_THIS\n🔑 ")
+            );
+        }
+    }
+    #[test]
     fn encrypted_identity_selection_errors_and_stale_listing() {
         for count in [0, 1, 2] {
             let mut app = app();
@@ -2006,6 +2252,12 @@ mod tests {
         fn replacing(&self) -> bool {
             self.replacing
         }
+        fn matches_reference(&self, reference: &str) -> bool {
+            reference == "id"
+        }
+        fn reuse(self: Box<Self>) -> futures::future::BoxFuture<'static, Result<String>> {
+            Box::pin(async { Ok("id".into()) })
+        }
         fn save(
             self: Box<Self>,
             _value: Zeroizing<String>,
@@ -2019,6 +2271,61 @@ mod tests {
             })
         }
     }
+    #[tokio::test]
+    async fn reuse_config_failures_and_stale_results_do_not_claim_ciphertext_writes() {
+        use crate::config::WriteBoundary;
+        for failure in [
+            WriteBoundary::Write,
+            WriteBoundary::FileSync,
+            WriteBoundary::Replace,
+            WriteBoundary::DirectorySync,
+        ] {
+            let mut app = app();
+            creator(&mut app);
+            let storage = app.config.dir().join("ciphertext");
+            std::fs::write(&storage, b"original ciphertext").unwrap();
+            if let View::Create(c) = &mut app.view {
+                c.pending = Some(Box::new(TestSave {
+                    path: storage.clone(),
+                    failure: None,
+                    replacing: true,
+                }));
+            }
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut tasks = Tasks(vec![]);
+            app.save_record(&tx, &mut tasks, true);
+            let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.message_checked(message, |boundary| {
+                anyhow::ensure!(boundary != failure, "Injected config failure");
+                Ok(())
+            });
+            assert_eq!(std::fs::read(&storage).unwrap(), b"original ciphertext");
+            assert!(app.error && app.status.contains("Ciphertext unchanged"));
+            assert_narrow_failure_readable(&mut app);
+            assert_eq!(
+                app.config.path.exists(),
+                failure == WriteBoundary::DirectorySync
+            );
+            key(&mut app, KeyCode::Esc);
+            creator(&mut app);
+            app.paste("NEW_DRAFT".into());
+            app.message(Message::Created {
+                reused: true,
+                generation: app.generation - 1,
+                name: "OLD".into(),
+                original: None,
+                source: "local-storage".into(),
+                result: Ok("id".into()),
+            });
+            assert!(app.status.contains("Cancelled draft: ciphertext unchanged"));
+            assert!(!app.config.entries.contains_key("OLD"));
+            assert!(matches!(&app.view, View::Create(c) if c.secret.as_str() == "NEW_DRAFT"));
+        }
+    }
+
     #[tokio::test]
     async fn encrypted_creation_faults_report_actual_surviving_files() {
         use crate::config::WriteBoundary;
@@ -2088,6 +2395,7 @@ mod tests {
                             "Ciphertext saved; configuration unchanged"
                         }));
                     }
+                    assert_narrow_failure_readable(&mut app);
                     // Failure leaves a usable UI, with truthful loaded state.
                     key(&mut app, KeyCode::Esc);
                     key(&mut app, KeyCode::Char('a'));
@@ -2136,7 +2444,30 @@ mod tests {
                 replacing: true,
             }));
         }
-        assert!(screen(&mut app).contains("ALL references"));
+        for index in 0..100 {
+            app.config.entries.insert(
+                format!("LONG_ENVIRONMENT_REFERENCE_NAME_{index}"),
+                Entry {
+                    source: "local-storage".into(),
+                    value: "id".into(),
+                },
+            );
+        }
+        for (width, height) in [(120, 30), (45, 12)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let text = screen_text(terminal.backend().buffer());
+            for expected in [
+                "ALL references",
+                "Loaded config only:",
+                "possible references.",
+                "y replaces",
+                "n retains draft",
+                "Esc cancels",
+            ] {
+                assert!(text.contains(expected), "missing {expected}: {text}");
+            }
+        }
         key(&mut app, KeyCode::Enter);
         assert!(!storage.exists());
         key(&mut app, KeyCode::Char('n'));

@@ -1,7 +1,8 @@
 # Experimental local-storage v1 contract
 
 The agent/envelope library introduced in ticket 01 now supports the registered
-provider, config-relative persistence, runtime resolution, and masked TUI creation.
+provider, config-relative persistence, runtime resolution, and masked TUI creation,
+reuse, and updates.
 There is no storage-management CLI. No real integration is advertised as
 tested: only the deterministic fake Unix agent has been exercised. Independent
 crypto/format review and consented Linux/macOS 1Password checks remain outstanding.
@@ -25,7 +26,22 @@ keys, use up/down and `Enter` in the fingerprint field to select explicitly.
 UTF-8, whitespace, and empty values. NUL rejects the entire paste. The value stays
 masked, including when using the ordinary editor's reveal/preview shortcuts.
 `Ctrl+S` saves; existing `(ID,key)` records require `y` confirmation with a warning
-that all references to that record are affected. `n` retains the draft unchanged.
+that all references to that record are affected. The bounded count of known
+possible references covers only the loaded configuration, not repository-wide
+discovery. `n` retains
+the draft unchanged. To update, open an existing entry and press `Ctrl+N`, then
+enter the replacement exact text (the editor starts empty, not with cached plaintext).
+A qualified reference must match the selected fingerprint.
+
+In the masked editor, `Ctrl+U` attaches the environment mapping to the selected
+existing `(ID,key)` record. It verifies decryption but discards the plaintext and
+never rewrites ciphertext; the masked value draft is ignored. Reuse requires an
+existing record and the same agent deadline, path validation, per-key lock, and
+loaded-byte conflict checks as saving.
+
+Failures open a details panel: `PgUp`/`PgDn` scroll the complete report, including
+partial completion and durability warnings. Other keys close the panel and perform
+their normal action; `Ctrl+C` still quits safely.
 
 Human editing has no agent deadline. Save rechecks loaded identities and uses one
 `PSST_TIMEOUT` agent-work budget, including queued requests, without retry or
@@ -33,13 +49,15 @@ fallback. Authored references omit the selector only when the selected key is th
 sole loaded key with this ID; otherwise they include its OpenSSH fingerprint.
 
 Ciphertext is persisted before configuration. Storage failure leaves configuration
-unchanged; config failure may leave unused ciphertext. Post-replacement sync
+unchanged; config failure may leave unused ciphertext. After replacement, existing
+references can already resolve the new value even if configuration saving fails.
+Reuse saves only configuration and reports its actual replacement/durability state. Post-replacement sync
 failures report changed files with uncertain durability, not rollback. `Esc`
 cancels unfinished work and discards the zeroizing draft; already completed writes
 are not undone. Late completed storage results never save an old draft's reference
 into a new draft. Reopen the configuration after external edits; retained unused
-records are not automatically cleaned up. Full reuse/update and encrypted deletion
-workflows remain later ticket scope.
+records are not automatically cleaned up. Encrypted deletion remains later ticket
+scope.
 
 An unqualified reference requires exactly one loaded eligible key with that ID;
 other IDs do not count. A selector restricts resolution to that fingerprint.

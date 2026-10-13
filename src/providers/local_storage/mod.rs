@@ -68,8 +68,12 @@ impl Author for LocalStorage {
     }
 
     fn prepare(&self, dir: &Path, id: &str, identity: &Identity) -> Result<Box<dyn PreparedSave>> {
-        validate_id(id)?;
+        let (id, selector) = reference(id)?;
         let key = PublicKey::from_blob(&identity.token)?;
+        ensure!(
+            selector.is_none_or(|s| s == key.fingerprint()),
+            "Reference selector does not match selected SSH identity"
+        );
         ensure!(
             key.fingerprint() == identity.fingerprint,
             "Mismatched selected identity"
@@ -103,6 +107,39 @@ impl PreparedSave for Creation {
         self.replacing
     }
 
+    fn matches_reference(&self, value: &str) -> bool {
+        reference(value).is_ok_and(|(id, selector)| {
+            id == self.id && selector.is_none_or(|s| s == self.key.fingerprint())
+        })
+    }
+
+    fn reuse(self: Box<Self>) -> BoxFuture<'static, Result<String>> {
+        Box::pin(async move {
+            let agent = Agent::from_env()?;
+            phase(async {
+                let keys = agent.identities().await?;
+                ensure!(
+                    keys.contains(&self.key),
+                    "Selected SSH agent key is no longer loaded"
+                );
+                self.authored_reference(&keys, false)?;
+                let keys = self
+                    .stored
+                    .reuse_validated(&agent, &self.id, async {
+                        let keys = agent.identities().await?;
+                        ensure!(
+                            keys.contains(&self.key),
+                            "Selected SSH agent key is no longer loaded"
+                        );
+                        Ok(keys)
+                    })
+                    .await?;
+                self.authored_reference(&keys, false)
+            })
+            .await
+        })
+    }
+
     fn save(mut self: Box<Self>, value: Zeroizing<String>) -> BoxFuture<'static, Result<String>> {
         Box::pin(async move {
             let agent = Agent::from_env()?;
@@ -130,23 +167,33 @@ impl PreparedSave for Creation {
                     .await?;
                 // Approval may change identities and records. Use refreshed keys
                 // and recheck records without awaiting after replacement.
-                let mut ambiguous = false;
-                for key in keys.iter().filter(|key| **key != self.key) {
-                    let stored = StoredKey::load(&self.dir, key.clone()).map_err(|source| {
-                        crate::config::PersistenceError {
-                            changed: true,
-                            source: source.context("Ciphertext saved; reference validation failed"),
-                        }
-                    })?;
-                    ambiguous |= stored.records().iter().any(|record| record.id == self.id);
-                }
-                Ok(if ambiguous {
-                    format!("{}#{}", self.id, self.key.fingerprint())
-                } else {
-                    self.id.clone()
-                })
+                self.authored_reference(&keys, true)
             })
             .await
+        })
+    }
+}
+
+impl Creation {
+    fn authored_reference(&self, keys: &[PublicKey], changed: bool) -> Result<String> {
+        let mut ambiguous = false;
+        for key in keys.iter().filter(|key| **key != self.key) {
+            let stored = StoredKey::load(&self.dir, key.clone()).map_err(|source| {
+                if changed {
+                    anyhow::Error::from(crate::config::PersistenceError {
+                        changed: true,
+                        source: source.context("Ciphertext saved; reference validation failed"),
+                    })
+                } else {
+                    source
+                }
+            })?;
+            ambiguous |= stored.records().iter().any(|record| record.id == self.id);
+        }
+        Ok(if ambiguous {
+            format!("{}#{}", self.id, self.key.fingerprint())
+        } else {
+            self.id.clone()
         })
     }
 }

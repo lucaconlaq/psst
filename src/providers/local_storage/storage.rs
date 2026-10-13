@@ -74,6 +74,29 @@ impl StoredKey {
         Ok(validated)
     }
 
+    // Keep the snapshot locked through verification; plaintext is discarded here.
+    pub(super) async fn reuse_validated<T>(
+        &self,
+        agent: &Agent,
+        id: &str,
+        validation: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let record = self
+            .file
+            .records
+            .iter()
+            .find(|record| record.id == id)
+            .context("No stored value for selected local-storage ID and key")?;
+        let _lock = self.lock()?;
+        let _value = record.decrypt(agent, &self.key, id).await?;
+        let validated = validation.await?;
+        ensure!(
+            read(&self.path)? == self.baseline,
+            "Local-storage changed on disk; reload before reusing"
+        );
+        Ok(validated)
+    }
+
     /// Remove only the selected ID; retain the per-key file even when empty.
     /// Missing IDs/files are a no-op. Call only after configuration deletion.
     pub fn remove(&mut self, id: &str) -> Result<()> {

@@ -46,6 +46,10 @@ pub trait Author: Sync {
 pub trait PreparedSave: Send {
     /// Whether saving would replace ciphertext, affecting all its references.
     fn replacing(&self) -> bool;
+    /// Whether a loaded configuration reference may refer to this record.
+    fn matches_reference(&self, reference: &str) -> bool;
+    /// Verify and reuse existing ciphertext without rewriting it.
+    fn reuse(self: Box<Self>) -> BoxFuture<'static, Result<String>>;
     /// Persist ciphertext and return its authored reference, never plaintext.
     /// Dropping before replacement cancels work; completed writes are not undone.
     fn save(self: Box<Self>, value: Zeroizing<String>) -> BoxFuture<'static, Result<String>>;

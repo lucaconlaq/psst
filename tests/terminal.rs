@@ -678,6 +678,181 @@ async fn encrypted_creation_chooser_selector_replacement_and_conflict() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_reuse_and_shared_update_preserve_ciphertext_and_other_users() {
+    use psst::config::{Config, Entry};
+    use psst::providers::local_storage::{PublicKey, StoredKey};
+    let fake = support::agent::FakeAgent::with_seeds(&[7, 8]).await;
+    let other = PublicKey::from_blob(&fake.state.identities.lock().unwrap()[1]).unwrap();
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(root).unwrap();
+    for (key, id, value) in [
+        (&fake.key, "shared", "OLD_SECRET"),
+        (&fake.key, "unrelated", "KEEP"),
+        (&other, "shared", "OTHER_USER"),
+    ] {
+        StoredKey::load(dir.path(), key.clone())
+            .unwrap()
+            .set(&fake.client, id, value)
+            .await
+            .unwrap();
+    }
+    let path = dir.path().join("psst.json");
+    let selected = format!("shared#{}", fake.key.fingerprint());
+    let entry = |value: String| Entry {
+        source: "local-storage".into(),
+        value,
+    };
+    Config::load(path.clone())
+        .unwrap()
+        .save(
+            [
+                ("FIRST".into(), entry(selected.clone())),
+                (
+                    "OTHER".into(),
+                    entry(format!("shared#{}", other.fingerprint())),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        )
+        .unwrap();
+    let file = dir
+        .path()
+        .join(".psst/local-storage")
+        .join(fake.key.filename());
+    let other_file = dir
+        .path()
+        .join(".psst/local-storage")
+        .join(other.filename());
+    let before = fs::read(&file).unwrap();
+    let other_before = fs::read(&other_file).unwrap();
+    let old = StoredKey::load(dir.path(), fake.key.clone())
+        .unwrap()
+        .records()
+        .iter()
+        .find(|r| r.id == "shared")
+        .unwrap()
+        .clone();
+    let mut pty = Pty::start_with_agent(&path, None, Some(&fake.socket()));
+    pty.wait_text("FIRST");
+    pty.encrypted_draft("shared");
+    pty.send(b"\x15"); // Reuse requires explicit identity with multiple keys.
+    pty.wait_text("Choose an SSH fingerprint explicitly");
+    pty.send(b"\t\r\x15");
+    pty.wait_text("Reused ciphertext; saved configuration");
+    assert_eq!(fs::read(&file).unwrap(), before);
+    assert_eq!(fs::read(&other_file).unwrap(), other_before);
+    assert_eq!(
+        Config::load(path.clone()).unwrap().entries["SECRET_1"].value,
+        selected
+    );
+    // Open FIRST and update through its qualified reference.
+    pty.send(b"\x1b[H\r\x0e");
+    pty.wait_text("Create encrypted value");
+    pty.wait_text("Masked exact text");
+    pty.send(b"\t\t\x1b[200~ \nUPDATED_SECRET\t\xe2\x98\x83\n\x1b[201~\t\r\x13");
+    pty.wait_text("Confirm replacement");
+    assert!(
+        pty.parser
+            .screen()
+            .contents()
+            .contains("Loaded config only: 2")
+    );
+    assert!(
+        pty.parser
+            .screen()
+            .contents()
+            .contains("possible references.")
+    );
+    pty.send(b"n");
+    pty.wait_text("Replacement cancelled");
+    assert_eq!(fs::read(&file).unwrap(), before);
+    pty.send(b"\x13y");
+    pty.wait_text("Saved encrypted value and configuration");
+    let after = StoredKey::load(dir.path(), fake.key.clone()).unwrap();
+    let updated = after.records().iter().find(|r| r.id == "shared").unwrap();
+    assert_ne!(updated.salt, old.salt);
+    assert_ne!(updated.nonce, old.nonce);
+    assert_eq!(after.records().len(), 2);
+    assert_eq!(fs::read(&other_file).unwrap(), other_before);
+    let result = Command::new(assert_cmd::cargo::cargo_bin!("psst"))
+        .env_remove("SSH_AUTH_SOCK")
+        .env("SSH_AUTH_SOCK", fake.socket())
+        .env("PSST_CONFIG", &path)
+        .env("PSST_TIMEOUT", "5")
+        .args([
+            "sh",
+            "-c",
+            "printf '%s|%s|%s' \"$FIRST\" \"$SECRET_1\" \"$OTHER\"",
+        ])
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        " \nUPDATED_SECRET\t☃\n| \nUPDATED_SECRET\t☃\n|OTHER_USER"
+    );
+    assert!(!pty.history.contains("UPDATED_SECRET") && !pty.history.contains("OLD_SECRET"));
+    pty.send(b"q");
+    pty.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_reuse_failures_keep_ciphertext_and_restore_usable_terminal() {
+    use psst::providers::local_storage::StoredKey;
+    use support::agent::{FakeAgent, Fault};
+    let fake = FakeAgent::new().await;
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(root).unwrap();
+    StoredKey::load(dir.path(), fake.key.clone())
+        .unwrap()
+        .set(&fake.client, "id", "NEVER_RENDER")
+        .await
+        .unwrap();
+    let file = dir
+        .path()
+        .join(".psst/local-storage")
+        .join(fake.key.filename());
+    let before = fs::read(&file).unwrap();
+    let config = dir.path().join("psst.json");
+    let mut pty = Pty::start_with_agent(&config, None, Some(&fake.socket()));
+    pty.wait_text("No secrets yet");
+    pty.encrypted_draft("missing");
+    pty.send(b"\x15");
+    pty.wait_text("No existing record");
+    pty.send(b"\x1b");
+    pty.wait_text("Draft cancelled");
+    pty.encrypted_draft("id");
+    fake.fault(Fault::Refuse);
+    pty.send(b"\x15");
+    pty.wait_text("Ciphertext unchanged");
+    assert!(!config.exists());
+    fake.fault(Fault::None);
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(file.with_extension("lock"))
+        .unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    pty.send(b"\x15");
+    pty.wait_text("Local-storage key is locked");
+    drop(lock);
+    fs::write(&config, b"{}").unwrap(); // External edit conflicts with loaded missing config.
+    pty.send(b"\x15");
+    pty.wait_text("configuration unchanged");
+    assert_eq!(fs::read(&config).unwrap(), b"{}");
+    assert_eq!(fs::read(&file).unwrap(), before);
+    assert!(!pty.history.contains("NEVER_RENDER"));
+    pty.send(b"\x1b");
+    pty.wait_text("Draft cancelled");
+    pty.send(b"a");
+    pty.wait_text("Environment name");
+    pty.send(b"\x1b");
+    pty.wait_text("Changes discarded");
+    pty.send(b"q");
+    pty.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_creation_agent_errors_cancellation_and_config_failure_leave_usable_tty() {
     use support::agent::{FakeAgent, Fault};
     let fake = FakeAgent::new().await;
