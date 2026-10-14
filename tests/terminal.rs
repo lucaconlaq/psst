@@ -1414,7 +1414,8 @@ async fn encrypted_creation_no_eligible_keys_is_a_usable_error_not_arbitrary_sel
     use support::agent::FakeAgent;
     let fake = FakeAgent::new().await;
     fake.state.identities.lock().unwrap().clear();
-    let dir = tempfile::tempdir().unwrap();
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(&root).unwrap();
     let config = dir.path().join("psst.json");
     let mut pty = Pty::start_with_agent(&config, None, Some(&fake.socket()));
     pty.wait_text("No secrets yet");
