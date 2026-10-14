@@ -709,7 +709,8 @@ async fn encrypted_create_save_resolve_exact_text_and_nul_rejection() {
 async fn encrypted_creator_reveal_toggle_expiry_and_hidden_save() {
     use support::agent::FakeAgent;
     let fake = FakeAgent::new().await;
-    let dir = tempfile::tempdir().unwrap();
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(&root).unwrap();
     let config = dir.path().join("psst.json");
     let value = "DELIBERATELY_REVEALED_DRAFT";
     let mut pty = Pty::start_with_agent(&config, None, Some(&fake.socket()));
@@ -776,7 +777,8 @@ async fn encrypted_creator_ctrl_u_is_inert_and_save_lock_error_keeps_ciphertext(
     use psst::providers::local_storage::StoredKey;
     use support::agent::FakeAgent;
     let fake = FakeAgent::with_seeds(&[7, 8]).await;
-    let dir = tempfile::tempdir().unwrap();
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(&root).unwrap();
     StoredKey::load(dir.path(), fake.key.clone())
         .unwrap()
         .set(&fake.client, "existing", "NEVER_REUSED_PLAINTEXT")
