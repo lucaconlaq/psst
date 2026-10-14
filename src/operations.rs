@@ -93,3 +93,48 @@ pub fn write_env(
     }
     crate::config::atomic_write(path, text.as_bytes())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_replacement_keeps_legacy_escaping_order_and_omissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "old content").unwrap();
+        write_env(
+            &path,
+            &[
+                ("B".into(), Ok(zeroize::Zeroizing::new("line\n$\"".into()))),
+                ("EMPTY".into(), Ok(zeroize::Zeroizing::new(String::new()))),
+                ("FAIL".into(), Err(anyhow::anyhow!("failure"))),
+                ("A".into(), Ok(zeroize::Zeroizing::new("plain".into()))),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "B=\"line\\n\\$\\\"\"\nA=plain\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let destination = dir.path().join("directory");
+        std::fs::create_dir(&destination).unwrap();
+        let error = write_env(&destination, &[]).unwrap_err();
+        assert!(
+            !error
+                .downcast_ref::<crate::config::PersistenceError>()
+                .unwrap()
+                .changed
+        );
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+}

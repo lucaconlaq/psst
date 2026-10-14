@@ -3,5 +3,6 @@ psst.json
 .psst.json
 .env
 mise.local.toml
-*.psst-lock
+.psst/
+psst.*
 /.pi/npm/

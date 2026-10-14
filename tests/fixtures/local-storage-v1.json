@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "public_key": "AAAAC3NzaC1lZDI1NTE5AAAAIOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs",
+  "fingerprint": "SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE",
+  "records": [
+    {
+      "version": 1,
+      "id": "fixture",
+      "public_key": "AAAAC3NzaC1lZDI1NTE5AAAAIOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs",
+      "salt": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "nonce": "AgICAgICAgICAgIC",
+      "ciphertext": "gAwO3cRCKbHLp+kAWwYGytGs1IRgr+k="
+    }
+  ]
+}

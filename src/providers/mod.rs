@@ -2,6 +2,7 @@ use crate::{
     browser::Level,
     config::{Entries, Entry},
 };
+
 use anyhow::{Result, bail};
 use futures::future::{BoxFuture, join_all};
 use std::path::Path;
@@ -9,17 +10,78 @@ use zeroize::Zeroizing;
 
 pub use op::totp;
 
+/// Experimental SSH-agent encryption, bounded v1 storage, and secret
+/// resolution.
+pub mod local_storage;
 mod manual;
 mod op;
 mod shell;
 mod terraform;
 mod vault;
 
-/// A sendable provider fetch, using inherited authentication and the config cwd.
+/// A sendable provider fetch, using inherited authentication and the config
+/// cwd.
 pub type FetchFuture<'a> = BoxFuture<'a, Result<Zeroizing<String>>>;
 
+/// Public identity metadata; the token is opaque to the UI.
+#[derive(Clone)]
+pub struct Identity {
+    /// Displayable fingerprint, never agent comments or secret text.
+    pub fingerprint: String,
+    /// Provider-owned identity encoding.
+    pub token: Vec<u8>,
+}
+
+/// Provider-owned encrypted authoring, separate from reference browsing.
+pub trait Author: Sync {
+    /// List eligible identities with a bounded agent-work deadline.
+    fn identities(&self) -> BoxFuture<'_, Result<Vec<Identity>>>;
+    /// Validate and load the selected record before requesting replacement consent.
+    fn prepare(&self, dir: &Path, id: &str, key: &Identity) -> Result<Box<dyn PreparedSave>>;
+    /// Select one loaded ciphertext snapshot without decrypting it.
+    fn prepare_deletion(
+        &self,
+        dir: &Path,
+        reference: &str,
+    ) -> BoxFuture<'static, Result<Box<dyn PreparedDelete>>>;
+    /// Select a qualified browser reference from storage without contacting an agent.
+    /// Removal is independent of configuration and keeps existing mappings.
+    fn prepare_browser_deletion(
+        &self,
+        dir: &Path,
+        reference: &str,
+    ) -> Result<Box<dyn PreparedDelete>>;
+    /// Conservative shared-reference warning, limited to loaded configuration.
+    fn may_share(&self, left: &str, right: &str) -> bool;
+    /// Maximum exact UTF-8 value bytes accepted by this author.
+    fn value_limit(&self) -> usize;
+}
+
+/// Selected ciphertext snapshot, with conflict-checked removal.
+/// Mapping deletion must save configuration before removal. Independent browser
+/// deletion keeps mappings, which may subsequently fail to resolve.
+pub trait PreparedDelete: Send {
+    /// Remove only this record, rejecting changes since selection.
+    fn remove(
+        &mut self,
+        boundary: &mut dyn FnMut(crate::config::WriteBoundary) -> Result<()>,
+    ) -> Result<()>;
+}
+
+/// A loaded record snapshot. Implementations must reject concurrent changes.
+pub trait PreparedSave: Send {
+    /// Whether saving would replace ciphertext, affecting all its references.
+    fn replacing(&self) -> bool;
+    /// Whether a loaded configuration reference may refer to this record.
+    fn matches_reference(&self, reference: &str) -> bool;
+    /// Persist ciphertext and return its authored reference, never plaintext.
+    /// Dropping before replacement cancels work; completed writes are not undone.
+    fn save(self: Box<Self>, value: Zeroizing<String>) -> BoxFuture<'static, Result<String>>;
+}
+
 /// Shared fetch, editor metadata, and optional browsing interface for a source.
-/// Implementations live in individual modules and are registered in `PROVIDERS`.
+/// Implementations live in individual modules and are registered in
+/// `PROVIDERS`.
 pub trait Provider: Sync {
     /// Case-sensitive identifier persisted in configuration files.
     fn id(&self) -> &'static str;
@@ -31,6 +93,10 @@ pub trait Provider: Sync {
     }
     /// Starting browser location, or none for text-only references.
     fn browser(&self) -> Option<Level> {
+        None
+    }
+    /// Optional encrypted value authoring; the UI never interprets identity tokens.
+    fn author(&self) -> Option<&'static dyn Author> {
         None
     }
     /// Resolve a stored reference without modifying the process environment.
@@ -46,6 +112,7 @@ static PROVIDERS: &[&dyn Provider] = &[
     &shell::Shell,
     &manual::Manual,
     &terraform::Terraform,
+    &local_storage::LocalStorage,
 ];
 
 /// Find a registered provider by its exact persisted identifier.
@@ -74,14 +141,22 @@ pub async fn fetch(entry: &Entry, dir: &Path) -> Result<Zeroizing<String>> {
     }
     Ok(value)
 }
-/// Resolve all entries concurrently, preserving config order and individual errors.
+/// Resolve all entries concurrently, preserving config order and individual
+/// errors.
 /// Provider subprocesses cannot depend on previously resolved secrets.
 pub async fn all(entries: &Entries, dir: &Path) -> Vec<(String, Result<Zeroizing<String>>)> {
-    join_all(
-        entries
-            .iter()
-            .map(|(name, entry)| async move { (name.clone(), fetch(entry, dir).await) }),
-    )
+    let operation = local_storage::Operation::default();
+    join_all(entries.iter().map(|(name, entry)| {
+        let operation = &operation;
+        async move {
+            let result = if entry.source == "local-storage" {
+                operation.fetch(&entry.value, dir).await
+            } else {
+                fetch(entry, dir).await
+            };
+            (name.clone(), result)
+        }
+    }))
     .await
 }
 fn scalar(value: &serde_json::Value) -> String {
@@ -110,9 +185,22 @@ mod tests {
         }
         assert_eq!(
             sources(),
-            ["op", "op 2FA", "vault", "shell", "manual", "terraform"]
+            [
+                "op",
+                "op 2FA",
+                "vault",
+                "shell",
+                "manual",
+                "terraform",
+                "local-storage"
+            ]
         );
         assert!(get("missing").is_none());
+        assert!(get("Local-storage").is_none());
+        let local = get("local-storage").unwrap();
+        assert!(!local.sensitive_reference());
+        assert!(local.browser().is_some());
+        assert_eq!(local.reference_label(), "Local storage ID · Ctrl+B browse");
         assert!(get("manual").unwrap().sensitive_reference());
         assert!(!get("shell").unwrap().sensitive_reference());
         for source in ["op", "op 2FA", "vault"] {
@@ -125,7 +213,7 @@ mod tests {
             get("vault").unwrap().reference_label(),
             "Vault (KV v2) · path#field · Ctrl+B browse"
         );
-        let terraform = PROVIDERS.last().unwrap();
+        let terraform = get("terraform").unwrap();
         assert_eq!(terraform.id(), "terraform");
         assert!(get("terraform").is_some());
         assert!(terraform.browser().is_none());

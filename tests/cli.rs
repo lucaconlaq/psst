@@ -37,7 +37,8 @@ impl Fixture {
     }
     fn command(&self) -> Command {
         let mut c = Command::new(binary());
-        c.current_dir(self.temp.path())
+        c.env_remove("SSH_AUTH_SOCK")
+            .current_dir(self.temp.path())
             .env("PSST_CONFIG", &self.config)
             .env(
                 "PATH",
@@ -309,7 +310,7 @@ fn help_version_and_downstream_options() {
         .arg("--version")
         .assert()
         .success()
-        .stdout("psst 2.0.0-alpha.3\n");
+        .stdout("psst 2.0.0-alpha.4\n");
     f.script("capture", "printf '%s|%s|%s' \"$1\" \"$2\" \"$3\"");
     f.command()
         .args(["capture", "--copy", "--write", "--help"])
@@ -320,7 +321,7 @@ fn help_version_and_downstream_options() {
         .args(["--version", "--copy"])
         .assert()
         .success()
-        .stdout("psst 2.0.0-alpha.3\n");
+        .stdout("psst 2.0.0-alpha.4\n");
     f.command().arg("--copy").assert().failure();
     f.command().assert().failure(); // non-terminal UI fails clearly instead of hanging
 }
@@ -372,6 +373,7 @@ fn signals_are_preserved_after_exec_and_cancel_fetches() {
     let f = Fixture::new(json!({}));
     let ready = f.temp.path().join("ready");
     let mut child = StdCommand::new(binary())
+        .env_remove("SSH_AUTH_SOCK")
         .env("PSST_CONFIG", &f.config)
         .args(["/bin/sh", "-c", "printf ready > \"$READY\"; exec sleep 20"])
         .env("READY", &ready)
@@ -390,6 +392,7 @@ fn signals_are_preserved_after_exec_and_cancel_fetches() {
     )
     .unwrap();
     let mut child = StdCommand::new(binary())
+        .env_remove("SSH_AUTH_SOCK")
         .current_dir(f.temp.path())
         .env("PSST_CONFIG", &f.config)
         .arg("true")
@@ -415,6 +418,7 @@ fn cancellation_kills_active_op_read_without_starting_queued_reads() {
     }));
     f.script("op", "case \"$2\" in\n op://v/first/field) printf '%s' $$ > fetching; sleep 20;;\n *) touch queued-started; exit 9;; esac");
     let mut child = StdCommand::new(binary())
+        .env_remove("SSH_AUTH_SOCK")
         .current_dir(f.temp.path())
         .env("PSST_CONFIG", &f.config)
         .env("PSST_TIMEOUT", "30")
@@ -485,6 +489,7 @@ fn clipboard_timeout_and_cancellation_kill_descendants() {
         let pidfile = f.temp.path().join("clipboard-descendant");
         if cancel {
             let mut child = StdCommand::new(binary())
+                .env_remove("SSH_AUTH_SOCK")
                 .env("PSST_CONFIG", &f.config)
                 .env(
                     "PATH",

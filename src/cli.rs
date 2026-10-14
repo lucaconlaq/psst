@@ -58,10 +58,17 @@ impl Args {
     }
 }
 /// Noninteractive usage text, printed without loading configuration.
-pub const HELP: &str = "psst — secrets, quietly\n\nUsage: psst [--copy NAME | --write] [--] [COMMAND [ARGS...]]\n\n  psst                      Open the secret manager\n  psst command args...      Fetch secrets in parallel and run command\n  psst --copy NAME          Copy one secret (literal bytes, no newline)\n  psst --write              Atomically overwrite .env in current directory\n  psst -h, --help           Show this help\n  psst -V, --version        Show version\n\nConfig: PSST_CONFIG, then nearest psst.json / .psst.json.\nUI: arrows to select, Enter to edit, a add, Space reveal, c copy,\n    Delete remove, / search, ? help, Esc back, q quit.\nProvider timeout: PSST_TIMEOUT seconds (default 30).\n";
+pub const HELP: &str = "psst — secrets, quietly\n\nUsage: psst [--copy NAME | --write] [--] [COMMAND [ARGS...]]\n\n  psst                      Open the secret manager\n  psst command args...      Fetch secrets in parallel and run command\n  psst --copy NAME          Copy one secret (literal bytes, no newline)\n  psst --write              Atomically overwrite .env in current directory\n  psst -h, --help           Show this help\n  psst -V, --version        Show version\n";
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn help_ends_after_options() {
+        assert!(HELP.ends_with("  psst -V, --version        Show version\n"));
+        for removed in ["Config:", "UI:", "Provider timeout:"] {
+            assert!(!HELP.contains(removed));
+        }
+    }
     #[test]
     fn version_stops_parsing() {
         for flag in ["--version", "-V"] {

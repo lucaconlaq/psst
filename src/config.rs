@@ -116,9 +116,21 @@ impl Config {
     pub fn dir(&self) -> &Path {
         self.path.parent().unwrap_or(Path::new("."))
     }
+    pub(crate) fn lock_path(&self) -> PathBuf {
+        let mut path = self.path.as_os_str().to_os_string();
+        path.push(".lock");
+        PathBuf::from(path)
+    }
     /// Validate and atomically save entries under a cooperative lock.
     /// Reject changes since loading; uncooperative writers can still race the write.
     pub fn save(&mut self, entries: Entries) -> Result<()> {
+        self.save_checked(entries, |_| Ok(()))
+    }
+    pub(crate) fn save_checked(
+        &mut self,
+        entries: Entries,
+        boundary: impl FnMut(WriteBoundary) -> Result<()>,
+    ) -> Result<()> {
         for (name, entry) in &entries {
             if !valid_name(name) || entry.source.contains('\0') || entry.value.contains('\0') {
                 bail!("Invalid name or NUL in entry");
@@ -126,7 +138,7 @@ impl Config {
         }
         let dir = self.dir();
         fs::create_dir_all(dir)?;
-        let lock_path = self.path.with_extension("psst-lock");
+        let lock_path = self.lock_path();
         let lock = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -142,10 +154,12 @@ impl Config {
         if bytes.len() > 4 * 1024 * 1024 {
             bail!("Config exceeds 4 MiB");
         }
-        atomic_write(&self.path, &bytes)?;
-        self.baseline = Some(bytes);
-        self.entries = entries;
-        Ok(())
+        let result = atomic_write_checked(&self.path, &bytes, boundary);
+        if result.as_ref().err().is_none_or(|error| error.changed) {
+            self.baseline = Some(bytes);
+            self.entries = entries;
+        }
+        result.map_err(anyhow::Error::new)
     }
 }
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
@@ -165,28 +179,142 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
 /// Replace a file using a synced temporary file in its directory (0600 on Unix).
 /// The parent must exist. A directory-sync error can occur after replacement.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temp.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
+    atomic_write_observed(path, bytes).map_err(anyhow::Error::new)
+}
+
+/// Failed persistence, including whether replacement already changed the file.
+/// A changed file is not necessarily durable when directory syncing fails.
+#[derive(Debug)]
+pub struct PersistenceError {
+    /// Replacement completed; do not claim rollback, even if syncing failed.
+    pub changed: bool,
+    /// Failure at the recorded persistence boundary.
+    pub source: anyhow::Error,
+}
+
+impl std::fmt::Display for PersistenceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (content changed: {})", self.source, self.changed)
     }
-    temp.write_all(bytes)?;
-    temp.as_file().sync_all()?;
-    temp.persist(path).map_err(|e| e.error)?;
-    #[cfg(unix)]
-    fs::File::open(dir)?.sync_all()?;
-    Ok(())
+}
+
+impl std::error::Error for PersistenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+/// Persistence observation points for provider mutation fault-injection seams.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WriteBoundary {
+    /// Before writing the temporary file.
+    Write,
+    /// Before syncing the temporary file.
+    FileSync,
+    /// Before replacing the destination.
+    Replace,
+    /// After replacement, before syncing its directory.
+    DirectorySync,
+}
+
+/// Atomic replacement with explicit pre/post-replacement failure evidence.
+pub fn atomic_write_observed(
+    path: &Path,
+    bytes: &[u8],
+) -> std::result::Result<(), PersistenceError> {
+    atomic_write_checked(path, bytes, |_| Ok(()))
+}
+
+pub(crate) fn atomic_write_checked(
+    path: &Path,
+    bytes: &[u8],
+    mut boundary: impl FnMut(WriteBoundary) -> Result<()>,
+) -> std::result::Result<(), PersistenceError> {
+    let mut changed = false;
+    let result = (|| -> Result<()> {
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        boundary(WriteBoundary::Write)?;
+        temp.write_all(bytes)?;
+        boundary(WriteBoundary::FileSync)?;
+        temp.as_file().sync_all()?;
+        boundary(WriteBoundary::Replace)?;
+        temp.persist(path).map_err(|e| e.error)?;
+        changed = true;
+        boundary(WriteBoundary::DirectorySync)?;
+        #[cfg(unix)]
+        fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    })();
+    result.map_err(|source| PersistenceError { changed, source })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn atomic_failures_preserve_old_or_complete_new_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("document");
+        for failure in [
+            WriteBoundary::Write,
+            WriteBoundary::FileSync,
+            WriteBoundary::Replace,
+            WriteBoundary::DirectorySync,
+        ] {
+            fs::write(&path, b"old").unwrap();
+            let error = atomic_write_checked(&path, b"complete new", |stage| {
+                anyhow::ensure!(stage != failure, "Injected failure");
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(error.changed, failure == WriteBoundary::DirectorySync);
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                if error.changed {
+                    b"complete new".as_slice()
+                } else {
+                    b"old".as_slice()
+                }
+            );
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+        atomic_write(&path, b"legacy wrapper").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"legacy wrapper");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn config_failed_replacement_keeps_loaded_entries_and_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("psst.json");
+        let mut config = Config::load(path.clone()).unwrap();
+        // A directory substituted for a missing file cannot be overwritten.
+        fs::create_dir(&path).unwrap();
+        assert!(config.save(Entries::new()).is_err());
+        assert!(config.entries.is_empty());
+        assert!(config.baseline.is_none());
+        fs::remove_dir(&path).unwrap();
+        config.save(Entries::new()).unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"{}");
+    }
+
     #[test]
     fn source_nul_is_rejected_on_load_and_save() {
         let t = tempfile::tempdir().unwrap();
@@ -245,6 +373,34 @@ mod tests {
         );
         assert!(!t.path().join(".psst.json").exists());
     }
+    #[test]
+    fn config_locks_append_to_the_full_filename_and_block_concurrent_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["psst.json", ".psst.json", "env", "custom.config.json"] {
+            let mut config = Config::load(dir.path().join(name)).unwrap();
+            let lock_path = dir.path().join(format!("{name}.lock"));
+            assert_eq!(config.lock_path(), lock_path);
+            config.save(Entries::new()).unwrap();
+            assert!(lock_path.exists());
+            let lock = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+            lock.try_lock_exclusive().unwrap();
+            assert!(
+                config
+                    .save(Entries::new())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Config is being saved by another psst process")
+            );
+            drop(lock);
+            config.save(Entries::new()).unwrap();
+        }
+        assert!(!dir.path().join("psst.psst-lock").exists());
+    }
+
     #[test]
     fn persistence_conflict_and_validation() {
         let t = tempfile::tempdir().unwrap();

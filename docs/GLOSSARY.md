@@ -21,5 +21,8 @@ A locator identifying a secret within a provider, such as a 1Password field or T
 **Environment name**:
 The name of the environment variable associated with an entry and used when injecting its secret.
 
+**Local storage ID**:
+An identifier for an encrypted secret in local storage, independent of its environment name. Together with the public key, it identifies a stored record; the same ID can identify different secrets under different keys.
+
 **Configuration**:
 The collection of entries defining which secrets psst manages and their associated environment names.

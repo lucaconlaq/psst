@@ -37,7 +37,8 @@ pub fn timeout() -> Duration {
             .unwrap_or(30),
     )
 }
-/// Run literal argv with null stdin/stderr and capture trimmed UTF-8 stdout.
+/// Run literal argv without a controlling terminal, with null stdin/stderr,
+/// and capture trimmed UTF-8 stdout.
 /// Enforce size/NUL/exit checks; cancellation and timeout kill the process group.
 pub async fn output(program: &str, args: &[&str], cwd: &Path) -> Result<Zeroizing<String>> {
     let mut command = Command::new(program);
@@ -49,7 +50,17 @@ pub async fn output(program: &str, args: &[&str], cwd: &Path) -> Result<Zeroizin
         .stderr(Stdio::null())
         .kill_on_drop(true);
     #[cfg(unix)]
-    command.process_group(0);
+    unsafe {
+        command.pre_exec(|| {
+            // A fresh session prevents CLI prompts from bypassing redirected
+            // streams via /dev/tty. Its process group still uses the child PID.
+            // SAFETY: setsid takes no pointers and is async-signal-safe.
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = command.spawn().with_context(|| {
         format!("Cannot start {program}; check installation and authentication")
     })?;
