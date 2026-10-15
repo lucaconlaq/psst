@@ -287,6 +287,12 @@ lock, loaded-byte conflict detection, and synced atomic replacement, preserving
 other IDs/users and retaining an empty per-key file. There is no cross-file
 transaction or rollback.
 
+Configuration and per-key writes share an owned lock guard that explicitly
+unlocks on scope exit, including failure and cancellation. Closing only the
+parent's descriptor is insufficient when a concurrent fork temporarily inherits
+the same open file description before close-on-exec. Acquisition remains
+nonblocking; genuine contention is an error, not an automatic retry.
+
 | Outcome | Observable state / recovery |
 | --- | --- |
 | Storage failure before replacement | Configuration is not saved; resolve the cause, reload, then retry. |
@@ -314,11 +320,13 @@ does not cache authentication tokens.
 Local-storage targets deterministic Ed25519 SSH-agent signing through Unix
 `SSH_AUTH_SOCK`, including 1Password SSH Key items, without reading private keys
 or invoking SSH/encryption executables. Compatible agents are allowed without
-vendor checks. Only fake-agent compatibility is verified; a vendor-looking
-socket is not proof of custody. Setup and key-recovery guidance belong in
-[README](../README.md#experimental-local-storage). Live Linux/macOS 1Password
-checks and independent crypto/format review remain outstanding; see
-[ticket 07](tickets/local-storage/07-experimental-release-readiness.md).
+vendor checks; a vendor-looking socket alone is not proof of custody. Consented
+macOS ARM64 1Password functional checks passed with process/socket ownership and
+code-signature identification. Authorization settings remain undocumented, and
+Linux live checks and independent crypto/format review remain outstanding; see
+[ticket 07](tickets/local-storage/07-experimental-release-readiness.md) for scoped
+evidence, not blanket release approval. Setup and key-recovery guidance belong
+in [README](../README.md#experimental-local-storage).
 
 ## Testing Seams
 

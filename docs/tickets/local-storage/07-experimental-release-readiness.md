@@ -40,6 +40,205 @@ suite or independent spec/rules/crypto review**. No tests, external checks, or l
 agents were run during this documentation consolidation. Historical results are
 kept separately and do not establish verification of the changed workflows.
 
+## Native macOS follow-up — 2026-10-15
+
+User authorized direct implementation in the current checkout because the project's
+subagent supervisor supports Linux only. Base: `d3c8e42f031edd213966ad851ffeec923679c290`,
+branch `v2`; changes were uncommitted when tested. No independent spec/rules review was run.
+This evidence applies to the working-tree changes from this session, not the base
+commit alone. Ticket status and release acceptance checkboxes remain unchanged.
+
+Platform: macOS 27.0.1 (26A434), ARM64 / `aarch64-apple-darwin`.
+Mise selected Rust 1.98.1 and Cargo 1.98.1. All verification commands removed
+inherited `SSH_AUTH_SOCK`; only explicit fake endpoints were used. Clipboard
+workflows used isolated helper executables, not the user's desktop clipboard.
+No real 1Password agent or key was contacted.
+
+Implemented follow-up:
+
+- Injected identity-listing future in the independent-creation UI test rather than
+  starting environment-selected agent listing; no process-global environment mutation.
+- Dashboard Ctrl+D ignores a selected loading entry, preserving generation,
+  loading, configuration and deletion state.
+- Dashboard Esc exits immediately after errors, with or without a filter;
+  editor/browser Esc follows the existing view navigation. Prompt hints match.
+- UI errors retain contextual cause chains, sanitized when rendered in the
+  scrollable details panel; nested-context coverage checks hidden secret values.
+- PTY Ctrl+Y covers dashboard, reference editor, browser, manual draft and encrypted
+  draft: exact multiline/Unicode/whitespace bytes, helper failure, unchanged
+  configuration/ciphertext, and no additional agent requests for draft-only copies.
+- All-consumer fail-stop now permits identity listing while refusing, disconnecting,
+  oversizing or appending trailing data at signing; each case asserts four signing
+  requests and no command, export replacement or clipboard-helper execution.
+- Valid legacy records are ignored for fetch/listing and left byte-identical by
+  direct-storage writes, without migration.
+- Authenticated invalid UTF-8/NUL plaintext is rejected after exactly one signature,
+  without returning plaintext or retrying. Public fixture key material is used.
+- Metadata-valid distinct-record documents accept 1,024 and reject 1,025 records;
+  oversized existing documents fail loading/authoring preparation before signing.
+  This count test is metadata validation, not authentication of every cloned record.
+- Corrected the authoring timeout assertion to inspect `.psst/<key>.json`.
+
+Commands below ran with prefix `env -u SSH_AUTH_SOCK mise exec --` and finite
+600-second tool deadlines. The first focused UI run caught an assertion requiring
+secret-bearing `Debug`; the assertion was corrected without adding that trait.
+Subsequent focused suites passed. Final checks on unchanged application/test files:
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt` | Passed |
+| `cargo fmt --check` | Passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo test --locked -- --test-threads=1` | 192 passed, including 21 PTY workflows |
+| `cargo test --locked` | 192 passed, including 21 PTY workflows |
+| `cargo build --locked --release` | Passed, native macOS ARM64 |
+
+Default-parallel test log: `/tmp/psst-macos-parallel-tests.log` (local, temporary).
+Other command output is retained in the implementation session, not durable CI
+artifacts. Historical counts elsewhere describe different revisions; they are not
+substituted for the 192 tests observed here.
+
+Rust 1.88 was initially unavailable; the subsequent pinned-toolchain verification
+below supersedes that limitation. Native macOS x86_64 and Linux x86_64/ARM64
+(including musl) remain unverified for these edits.
+At this automated checkpoint both live 1Password protocols were outstanding;
+the later consented macOS results are recorded below. Independent spec/rules and
+documentation acceptance, Linux live checks, and independent crypto/format review
+remain outstanding. Nothing here establishes experimental release readiness or
+removes the experimental label.
+
+### Pinned Rust 1.88.0 follow-up — 2026-10-15
+
+User requested Rust 1.88 as the development toolchain. Mise and CI now pin
+`1.88.0`; the global default was not changed. `mise install rust@1.88.0`
+succeeded, and `mise exec -- rustc --version` confirmed 1.88.0. No application
+or test code changed in this toolchain follow-up. All commands below used
+`env -u SSH_AUTH_SOCK mise exec --` with finite 600-second tool deadlines:
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt --check` | Passed |
+| `cargo check --locked --all-targets` | Passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo test --locked` | Failed: 91 library tests passed, one failed; subsequent suites did not run |
+| `cargo test --locked --lib providers::local_storage::storage::tests::browser_deletion_reports_atomic_write_partial_outcomes -- --exact` | Passed in isolation |
+| `cargo test --locked -- --test-threads=1` | 192 passed, including 21 PTY workflows |
+| `cargo build --locked --release` | Passed, native macOS ARM64 |
+
+The parallel failure was `browser_deletion_reports_atomic_write_partial_outcomes`
+at storage.rs:569: `Local-storage key is locked; try again`, caused by OS error 35
+(`Resource temporarily unavailable`). At this checkpoint the cause was unknown;
+isolated/serial passes did not resolve it. The lock-lifetime investigation and
+verification below supersede that blocker. CI pins remain configuration only,
+not passing-run evidence for other platforms.
+
+### Lock-lifetime correction — 2026-10-15
+
+The original parallel failure did not recur in the first investigation rerun.
+A deterministic duplicate-descriptor regression then reproduced the same OS error
+35 with close-only lock cleanup: `flock` remains held until every descriptor for
+the same open file description is closed, including a descriptor temporarily
+inherited by a concurrent fork before exec. This demonstrates the lifetime bug;
+the original failing process was not traced to identify a particular child.
+
+Configuration saves and per-key storage mutations now share an owned `FileLock`
+guard that explicitly unlocks on drop, including early errors and cancellation.
+It is created only after successful acquisition, so failed acquisition cannot
+unlock another owner. No lock retries, sleeps, test serialization, path changes,
+or weakened contention/conflict checks were introduced.
+
+`lock_release_does_not_wait_for_duplicated_descriptors` failed deterministically
+before explicit unlocking and passed afterward. It checks retained duplicates,
+real contention, failed acquisition, release, and a subsequent owner's lock.
+`lock_releases_on_error_and_cancelled_future_with_duplicate_open` checks early
+failure and dropping a polled pending future while duplicates remain open.
+Existing persistence, concurrency, cancellation and partial-outcome tests remain.
+
+On native macOS ARM64, pinned Rust 1.88.0, with inherited `SSH_AUTH_SOCK` removed:
+
+| Command after `mise exec --` | Result |
+| --- | --- |
+| `cargo fmt` / `cargo fmt --check` | Passed |
+| `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo test --locked` | 194 passed, including 21 PTY workflows, default parallel execution |
+| `cargo test --locked --lib`, 20 consecutive runs | All passed; 94 tests per run |
+| `cargo check --locked --all-targets` | Passed |
+| `cargo build --locked --release` | Passed |
+
+Commands used finite tool deadlines (600 seconds for the full suite/checks,
+180 seconds for the 20-run loop plus compilation/release checks). Repetition logs:
+`/var/folders/7t/j9k9z93x7gj6hpcxrsmmd8sh0000gn/T/psst-lock-regression.A7q04L/`
+(local temporary evidence, not CI artifacts). No real agent, private key, or
+1Password operation was accessed. The previous failing run remains recorded
+above rather than being overwritten by the subsequent passes. Changes were
+uncommitted at this checkpoint; independent reviews/platform/live gates remained outstanding.
+
+## Consented macOS 1Password session — 2026-10-15
+
+**Functional checks passed; evidence limitations remain.** The user explicitly
+allowed isolated live tests through the macOS 1Password SSH agent, with signing
+restricted to the disposable Ed25519 test key below. No private key was read or
+exported, and no personal records were modified. Normal tests/CI remain isolated.
+The user confirmed the key was disposable and enabled the SSH agent.
+
+- Host: macOS 27.0.1 ARM64. Native Rust 1.88.0 release build, psst 2.0.0-alpha.4,
+  base `d3c8e42f031edd213966ad851ffeec923679c290` plus this session's uncommitted
+  fixes. Binary SHA256: `810748da04b667265500bc8bfa98cc3791503048ffdafa5e4ea3ae3394e324e4`.
+- Integration: `/Applications/1Password.app`, bundle version **8.12.40**, identifier
+  `com.1password.1password`, signed by AgileBits Inc., Team ID `2BUA8C4S2C`.
+  `codesign --verify --deep --strict` passed. Homebrew's earlier receipt said
+  8.12.38; the observed bundle version is used, not the stale receipt. The About
+  dialog version was not separately confirmed.
+- Endpoint: `$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`.
+  Process inspection identified the running app at the above path; `lsof` tied
+  this socket to its PID 82643 and the current user. Socket mode was 0600.
+  This identifies the integration beyond merely recognizing a vendor-like path.
+- Consented fingerprint: `SHA256:fi3OF5K2KYvE4U8eV16caYhs8ML2ri9+lagWyiRC1pw`.
+  Explicit-endpoint `ssh-add -l` confirmed a matching 256-bit Ed25519 identity;
+  other public identities were omitted from output. Signing used only this key.
+- Private nonsymlinked test directory: `/private/tmp/psst-spec01-live.GzMPH7`,
+  mode 0700; `.psst/` 0700 and per-key JSON/lock files 0600. Explicit `PSST_CONFIG`
+  and `SSH_AUTH_SOCK`, `PSST_TIMEOUT=60`. A temporary Python launcher supervised
+  existing psst TUI/runtime interfaces for at most 600 seconds, terminating on
+  timeout with a five-second kill grace and restoring terminal attributes.
+  Assistant-launched CLI checks also had 90-second tool deadlines.
+- **Approval policy/session duration: unknown.** User selected “Not sure” when
+  asked. Lock/unlock and an approval prompt were user-confirmed, but exact prompt
+  counts and linking-time absence of prompts were not explicitly reported. Do not
+  infer per-request authorization or a fixed prompt count from these results.
+
+| Check | Observed evidence |
+| --- | --- |
+| Creation and verified repeatability | User completed TUI creation of `readiness-check`; its stored record matched the selected key. Successful creation traverses two strictly verified identical signatures over one challenge. This is live implementation evidence, not independent crypto review. |
+| Fresh-process decrypt | Assistant ran a new psst process wrapping `sh -c 'test "$SECRET_1" = test-only'`, with inherited `SECRET_1` removed: exit 0, no value printed. User repeated it, reported exit 0, and confirmed prior lock/unlock plus an approval prompt. |
+| Update | Same ID/key replaced with `updated-test-only`; observed fresh salt/nonce and unchanged configuration bytes. Fresh-process comparison exited 0. An initial leading-space ID created a distinct record; the user corrected this, and later inspection showed only the intended record. Removal of the accidental record was not directly observed. |
+| Separate second mapping | `SECRET_2` linked to the same qualified reference. Ciphertext bytes/hash were unchanged. A new process with both inherited variables removed compared both against `updated-test-only`: exit 0, no values printed. |
+| Refused wrapped command | Explicit `SSH agent refused signing`, exit 1; the owned marker file was absent, proving the command did not launch. |
+| Refused exports | Explicit signing refusal and exit 1 for absent and existing `.env`; absent stayed absent, existing retained exact sentinel bytes. |
+| Refused copy | Explicit signing refusal and exit 1. An isolated fake `pbcopy` would write a marker; it never ran. The desktop clipboard was not used. |
+| Refused update and creation | User reported TUI signing-refusal outcomes for replacement with `must-not-save` and new ID `refusal-new`. Assistant verified unchanged configuration/ciphertext hashes and no new record. These were refusals, not timeouts. |
+| Recovery | First recovery attempt was refused; user explained they had not approved it. A separately announced new operation was approved and exited 0 comparing the retained value against `updated-test-only`. No automatic retry. |
+| Creation without mapping save | Earlier attempts included separate linking, as the user confirmed. Final `final-unlinked-check` creation added a third record; both prior records remained, no mapping referenced the new ID, and configuration hash stayed byte-identical. |
+| Exit | User confirmed the terminal was normal after Ctrl+C. This was a supervised session whose launcher also restores terminal attributes; direct app-only restoration has separate automated PTY evidence. |
+
+Artifact checkpoints (SHA256; only dummy values were used):
+
+| Artifact checkpoint | SHA256 |
+| --- | --- |
+| Initial single-mapping configuration, unchanged through update/refusal | `be8c78754a3b0a64720382edecfeae0bc8ef38f8bbaf96c8598db4ecddbebcdf` |
+| Initial ciphertext document | `afb8555cc4518573b0079b443547971e1a091fe24ac542645d00d6cdba2a1293` |
+| Updated ciphertext, unchanged through refusal and second linking | `97def55ae443c27f3ca23f1d3204c11c6164ac1b505013967ca749482f1ac1fa` |
+| Two mappings to the updated record | `5d6d72a6b6494809699117097a899292d64d2359070946186eb886a6f25be4f2` |
+| Final creation-only configuration before/after | `32d0ed0025182f2338ea306a6ca80dfc28e53c2455ce200e6a3001e224bbbd72` |
+
+The user authorized deletion of only the owned temporary test directory after
+preserving this evidence. Cleanup is pending: an interactive shell was still
+using its `.psst/` subdirectory as cwd. The user must leave that directory before
+removal, then remove the disposable 1Password item only after ciphertext cleanup.
+No test key has been deleted by the assistant. These observations do not satisfy
+Linux live verification, other-platform builds, independent reviews, or complete
+approval-settings documentation. Ticket 07 remains in-progress and experimental.
+
 ## Automated acceptance matrix — current inventory
 
 Test names identify evidence without prescribing implementation organization.
@@ -180,12 +379,13 @@ Existing CI required both macOS architectures and both Linux musl architectures;
 unchanged workflows did not prove completed runs, and GNU builds did not satisfy
 musl release gates.
 
-## Planned consented real 1Password protocol (NOT RUN)
+## Consented real 1Password protocol
 
 **Do not run without new explicit consent for the exact platform, agent and test
-key.** No consent was supplied for ticket 07. Normal tests/CI never run this
-protocol. Run separately on native Linux and macOS with a dedicated disposable
-Ed25519 SSH Key item in 1Password, not personal production keys. Preserve that key
+key.** The original protocol was unexecuted; the 2026-10-15 macOS consent, results,
+and remaining evidence limits are recorded above. Linux remains unexecuted.
+Normal tests/CI never run this protocol. Run separately on native Linux and macOS
+with a dedicated disposable Ed25519 SSH Key item in 1Password, not personal production keys. Preserve that key
 until all test ciphertext is removed. Use existing TUI/runtime interfaces, not
 new management commands; setup is in the [README](../../../README.md).
 
@@ -243,19 +443,23 @@ new management commands; setup is in the [README](../../../README.md).
    do not remove unrelated records/keys or retire the key before ciphertext cleanup.
 
 Required results: creation, later decrypt/update, approval, rejection and verified
-repeatability on **both Linux and macOS**. Every result remains **NOT RUN**;
-no 1Password integration is advertised as verified.
+repeatability on **both Linux and macOS**. The macOS functional results above
+are bounded evidence, not blanket integration or release approval. Linux remains
+**NOT RUN**, and macOS authorization settings are still undocumented.
 
 ## BLOCKERS — do not mark done
 
-- Required macOS x86_64/ARM64 and Linux ARM64 tests/release builds unavailable;
-  Linux x86_64/ARM64 musl tests/release binaries unverified. Local GNU/Linux
-  builds do not satisfy musl or other-platform gates; CI configuration is not
-  evidence of completed runs. Existing release checks remain intact.
-- No consent for live Linux/macOS 1Password checks. Creation, later decrypt/update,
-  approval/rejection, repeatability and actual integration identification remain
-  **NOT RUN** on both platforms. Socket naming and historical toy results do not
-  satisfy this gate. No real integration is advertised as verified.
+- Native macOS ARM64 tests/release build passed in the 2026-10-15 follow-up above.
+  macOS x86_64 and Linux x86_64/ARM64 (including musl) tests/release builds remain
+  unverified for those changes. Rust 1.88 native macOS ARM64 parallel tests and
+  release build passed after the lock-lifetime correction documented above.
+  Historical GNU/Linux builds do not satisfy current musl or other-platform gates; CI
+  configuration is not evidence of completed runs. Release checks remain intact.
+- Consented live macOS ARM64 functional checks passed as recorded above, including
+  integration identification, creation, decrypt/update, approval/refusal and
+  repeatability. Authorization policy/session duration remain unknown; do not
+  claim complete protocol documentation. Linux live checks remain **NOT RUN**
+  without platform access and separate consent. macOS results do not satisfy Linux.
 - Independent crypto/format production-readiness review absent; no review evidence
   or follow-up findings can be recorded. Feature remains explicitly experimental,
   and unmet platform/live gates also block experimental release readiness.

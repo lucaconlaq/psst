@@ -108,8 +108,10 @@ exports private keys nor fetches an encryption key through `op`; no SSH server o
 uploaded public key is needed. Follow
 [1Password setup](https://developer.1password.com/docs/ssh/get-started/) and
 [eligible-key guidance](https://developer.1password.com/docs/ssh/agent/).
-The referenced setup excludes Linux Flatpak/Snap agent installations; live
-compatibility has not been verified on any platform.
+The referenced setup excludes Linux Flatpak/Snap agent installations. Consented
+macOS ARM64 live functional checks passed; their evidence limits and outstanding
+Linux checks are recorded in [ticket 07](docs/tickets/local-storage/07-experimental-release-readiness.md).
+This does not establish release readiness or production approval.
 
 Example socket selection—confirm that it is your intended endpoint first:
 
