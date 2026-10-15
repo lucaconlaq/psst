@@ -1,0 +1,10 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "binary": {
+        "path": "/opt/homebrew/bin/mise",
+        "arguments": ["exec", "--", "rust-analyzer"]
+      }
+    }
+  }
+}
