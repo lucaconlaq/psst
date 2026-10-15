@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
       - name: Verify release tag matches package version
@@ -57,12 +57,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
+        run: rustup toolchain install 1.88.0 --profile minimal --target "${{ matrix.target }}"
       - name: Test
         timeout-minutes: 10
-        run: cargo +stable test --locked --target "${{ matrix.target }}" -- --nocapture
+        run: cargo +1.88.0 test --locked --target "${{ matrix.target }}" -- --nocapture
       - name: Build
-        run: cargo +stable build --locked --release --target "${{ matrix.target }}"
+        run: cargo +1.88.0 build --locked --release --target "${{ matrix.target }}"
       - name: Package release archive
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |

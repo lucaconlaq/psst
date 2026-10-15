@@ -445,9 +445,9 @@ compiler diagnostic, or search result, not just in your editor.
   Rust 2024 is stable in Rust 1.85. It is not a reason to switch this project to nightly.
 
 **Repository policy:** `Cargo.toml` declares `edition = "2024"` and
-`rust-version = "1.88"`. `mise.toml` selects the latest Rust toolchain for local
-development; CI uses stable Rust on Linux and macOS. These are rolling versions,
-not an exact toolchain pin. This repository has no Nix flake. Use `cargo fmt` so
+`rust-version = "1.88"`. `mise.toml` and CI pin Rust `1.88.0` for local
+development and Linux/macOS verification. Keep these pins aligned when explicitly
+upgrading the toolchain. This repository has no Nix flake. Use `cargo fmt` so
 formatting is aware of the Cargo edition. Retain the default style rather than
 adding personal formatting overrides. Resolve discrepancies with the repository
 formatter and the edition-appropriate source, not repeated manual edits. Treat
@@ -489,8 +489,8 @@ mise exec -- cargo clippy --locked --all-targets -- -D warnings
 mise exec -- cargo test --locked
 ```
 
-CI uses the same checks with stable Rust. Test Rust 1.88 separately when that
-toolchain is available; passing on a newer toolchain does not establish MSRV.
+CI uses the same checks with pinned Rust 1.88.0. If testing with a newer toolchain,
+also verify the pinned version; newer-toolchain results do not establish MSRV.
 
 Review manually what these commands do not establish:
 

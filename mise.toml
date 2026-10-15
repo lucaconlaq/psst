@@ -2,7 +2,7 @@
 op = "2.30.3"
 vault = "1.19.1"
 pi = "latest"
-rust = "latest"
+rust = "1.88.0"
 
 [tool_alias]
 pi = "npm:@earendil-works/pi-coding-agent"
