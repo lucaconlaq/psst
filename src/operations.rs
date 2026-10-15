@@ -42,7 +42,10 @@ pub async fn copy(value: &str) -> Result<()> {
         let mut group = crate::process::Group::new(child.id().unwrap_or(0));
         let work = async {
             let mut stdin = child.stdin.take().unwrap();
-            stdin.write_all(value.as_bytes()).await?;
+            stdin
+                .write_all(value.as_bytes())
+                .await
+                .context("Clipboard helper failed while receiving secret")?;
             drop(stdin);
             if !child.wait().await?.success() {
                 bail!("Clipboard helper failed; check your desktop session");

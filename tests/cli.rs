@@ -274,6 +274,20 @@ fn clipboard_preserves_literal_bytes_without_executing() {
     f.command().args(["--copy", "MISSING"]).assert().failure();
 }
 #[test]
+fn clipboard_helper_closing_stdin_reports_context_without_secret() {
+    // Exceed pipe capacity so the write fails even if it starts before exit.
+    let secret = "DUMMY_CLIPBOARD_SECRET".repeat(100_000);
+    let f = Fixture::new(json!({"KEY":{"source":"manual", "value":secret}}));
+    for helper in ["pbcopy", "xclip", "xsel", "wl-copy"] {
+        f.script(helper, "exec 0<&-\nexit 1");
+    }
+    let output = f.command().args(["--copy", "KEY"]).assert().failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("Clipboard helper failed"), "{stderr}");
+    assert!(!stderr.contains("DUMMY_CLIPBOARD_SECRET"));
+    assert!(output.get_output().stdout.is_empty());
+}
+#[test]
 fn export_is_private_ordered_and_escaped() {
     let f = Fixture::new(
         json!({"A":{"source":"manual","value":"a\n\"b\\c $HOME #literal"},"B":{"source":"manual","value":"plain"},"EMPTY":{"source":"shell","value":"printf ''"}}),
