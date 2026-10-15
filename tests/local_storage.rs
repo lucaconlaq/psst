@@ -35,6 +35,63 @@ async fn stable_node_crypto_fixture_decrypts_through_fake_agent() {
 }
 
 #[tokio::test]
+async fn authenticated_invalid_plaintext_is_rejected_without_retry_or_disclosure() {
+    use aes_gcm::{
+        Aes256Gcm, KeyInit, Nonce,
+        aead::{Aead, Payload},
+    };
+    use data_encoding::HEXLOWER;
+
+    let fake = FakeAgent::new().await;
+    let file: KeyFile =
+        serde_json::from_slice(include_bytes!("fixtures/local-storage-v1.json")).unwrap();
+    // Public derivation vector from the independent fixture generator.
+    let key = HEXLOWER
+        .decode(b"81e0bb0d85aadb08630da834df74405d81b05bde51fca33ff7cea2419798bf0d")
+        .unwrap();
+    let aad = HEXLOWER
+        .decode(
+            concat!(
+                "707373742f6c6f63616c2d73746f726167652f616164000000000100000033",
+                "0000000b7373682d6564323535313900000020",
+                "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+                "0000000766697874757265",
+                "0101010101010101010101010101010101010101010101010101010101010101",
+                "020202020202020202020202",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+    for (plaintext, expected) in [
+        (b"PRIVATE_INVALID_UTF8\xff".as_slice(), "not UTF-8"),
+        (b"PRIVATE_NUL\0VALUE".as_slice(), "contains NUL"),
+    ] {
+        let mut record = file.records[0].clone();
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&[2; 12]),
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
+            .unwrap();
+        record.ciphertext = BASE64.encode(&ciphertext);
+        let before = fake.signs();
+        let error = record
+            .decrypt(&fake.client, &fake.key, "fixture")
+            .await
+            .unwrap_err();
+        let details = format!("{error:#}");
+        assert!(details.contains(expected), "{details}");
+        assert!(!details.contains("PRIVATE"));
+        assert!(!details.contains("authentication failed"));
+        assert_eq!(fake.signs(), before + 1);
+    }
+}
+
+#[tokio::test]
 async fn exact_text_round_trips_and_fresh_writes() {
     let fake = FakeAgent::new().await;
     let identities = fake.client.identities().await.unwrap();

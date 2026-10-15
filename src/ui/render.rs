@@ -182,7 +182,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
     let actions: &[(&str, &str)] = if app.error_prompt() {
-        &[("Esc", "back")]
+        if matches!(app.view, View::Main) && app.delete.is_none() {
+            &[("Esc", "quit")]
+        } else {
+            &[("Esc", "back")]
+        }
     } else if app.browser_delete.is_some() {
         &[("Enter", "delete"), ("Esc", "cancel")]
     } else if let Some(name) = &app.delete {

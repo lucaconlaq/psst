@@ -495,5 +495,5 @@ async fn author_deadline_worker() {
     assert!(error.to_string().contains("timed out"));
     assert!(start.elapsed() < Duration::from_millis(1600));
     assert!(active.await.unwrap().is_err());
-    assert!(!root.join(key.filename()).exists());
+    assert!(!root.join(".psst").join(key.filename()).exists());
 }

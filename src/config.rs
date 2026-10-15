@@ -78,6 +78,25 @@ pub fn discover(
     cwd.join("psst.json")
 }
 
+/// Owned cooperative lock shared by configuration and encrypted storage writes.
+pub(crate) struct FileLock(fs::File);
+
+impl FileLock {
+    pub(crate) fn try_exclusive(file: fs::File) -> std::io::Result<Self> {
+        file.try_lock_exclusive()?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        // Closing only our descriptor can leave a flock held by a concurrent
+        // fork until the child's close-on-exec. Release it at operation end,
+        // including early errors and cancellation, before closing the file.
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
 /// Ordered configuration with the original bytes retained for conflict detection.
 pub struct Config {
     /// Chosen config path, also determining provider cwd.
@@ -145,7 +164,7 @@ impl Config {
             .read(true)
             .write(true)
             .open(lock_path)?;
-        lock.try_lock_exclusive()
+        let _lock = FileLock::try_exclusive(lock)
             .context("Config is being saved by another psst process; try again")?;
         if read_optional(&self.path)? != self.baseline {
             bail!("Config changed on disk. Reopen psst before saving.");
@@ -261,6 +280,57 @@ pub(crate) fn atomic_write_checked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lock_release_does_not_wait_for_duplicated_descriptors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock");
+        let file = fs::File::create(&path).unwrap();
+        // dup and fork share the same open file description. Retain a duplicate
+        // to model a concurrently spawned child before its close-on-exec runs.
+        let inherited = file.try_clone().unwrap();
+        let lock = FileLock::try_exclusive(file).unwrap();
+        let open = || fs::OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(FileLock::try_exclusive(open()).is_err());
+        // Failed acquisition must not release the current owner's lock.
+        assert!(FileLock::try_exclusive(open()).is_err());
+        drop(lock);
+        let next = FileLock::try_exclusive(open()).expect("finished operation must release lock");
+        drop(inherited);
+        assert!(FileLock::try_exclusive(open()).is_err());
+        drop(next);
+        assert!(FileLock::try_exclusive(open()).is_ok());
+    }
+
+    #[test]
+    fn lock_releases_on_error_and_cancelled_future_with_duplicate_open() {
+        use futures::FutureExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock");
+        let file = fs::File::create(&path).unwrap();
+        let inherited = file.try_clone().unwrap();
+        let open = || fs::OpenOptions::new().write(true).open(&path).unwrap();
+        let result: Result<()> = (|| {
+            let _lock = FileLock::try_exclusive(file)?;
+            bail!("Injected early failure");
+        })();
+        assert!(result.is_err());
+        let file = open();
+        let cancelled_duplicate = file.try_clone().unwrap();
+        let mut work = Box::pin(async move {
+            let _lock = FileLock::try_exclusive(file).unwrap();
+            std::future::pending::<()>().await;
+        });
+        assert!(work.as_mut().now_or_never().is_none());
+        assert!(FileLock::try_exclusive(open()).is_err());
+        drop(work);
+        let next = FileLock::try_exclusive(open()).expect("cancellation must release lock");
+        drop(inherited);
+        drop(cancelled_duplicate);
+        assert!(FileLock::try_exclusive(open()).is_err());
+        drop(next);
+    }
+
     #[test]
     fn atomic_failures_preserve_old_or_complete_new_content() {
         let dir = tempfile::tempdir().unwrap();
@@ -387,7 +457,7 @@ mod tests {
                 .write(true)
                 .open(&lock_path)
                 .unwrap();
-            lock.try_lock_exclusive().unwrap();
+            let lock = FileLock::try_exclusive(lock).unwrap();
             assert!(
                 config
                     .save(Entries::new())

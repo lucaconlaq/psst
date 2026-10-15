@@ -314,7 +314,7 @@ impl App {
                 self.main();
                 self.status("Saved securely.", false);
             }
-            Err(e) => self.status(e.to_string(), true),
+            Err(e) => self.status(format!("{e:#}"), true),
         }
     }
     pub(super) fn create(&mut self, tx: &mpsc::UnboundedSender<Message>, tasks: &mut Tasks) {
@@ -326,6 +326,14 @@ impl App {
             self.status("This provider does not support encrypted creation.", true);
             return;
         };
+        self.create_with_identities(author.identities(), tx, tasks);
+    }
+    pub(super) fn create_with_identities(
+        &mut self,
+        identities: impl std::future::Future<Output = Result<Vec<providers::Identity>>> + Send + 'static,
+        tx: &mpsc::UnboundedSender<Message>,
+        tasks: &mut Tasks,
+    ) {
         let view = std::mem::replace(&mut self.view, View::Main);
         let (mut editor, return_browser) = match view {
             View::Editor(editor) => (editor, None),
@@ -362,7 +370,7 @@ impl App {
         tasks.push(
             generation,
             tokio::spawn(async move {
-                let result = author.identities().await;
+                let result = identities.await;
                 let _ = tx.send(Message::Identities { generation, result });
             }),
         );
@@ -405,7 +413,7 @@ impl App {
                     self.save_creation(tx, tasks);
                 }
             }
-            Err(error) => self.status(error.to_string(), true),
+            Err(error) => self.status(format!("{error:#}"), true),
         }
     }
     pub(super) fn save_creation(&mut self, tx: &mpsc::UnboundedSender<Message>, tasks: &mut Tasks) {
@@ -468,13 +476,13 @@ impl App {
                 self.main();
                 self.status(
                     format!(
-                        "Mapping removed; config durability uncertain; ciphertext kept: {error}"
+                        "Mapping removed; config durability uncertain; ciphertext kept: {error:#}"
                     ),
                     true,
                 );
             } else {
                 self.status(
-                    format!("Configuration unchanged; ciphertext kept: {error}"),
+                    format!("Configuration unchanged; ciphertext kept: {error:#}"),
                     true,
                 );
             }
@@ -484,12 +492,12 @@ impl App {
         self.main();
         match removal {
             None => self.status(if encrypted { format!("Deleted {name}; ciphertext kept.") } else { format!("Deleted {name}.") }, false),
-            Some(Err(error)) => self.status(format!("Mapping removed; ciphertext kept: {error}"), true),
+            Some(Err(error)) => self.status(format!("Mapping removed; ciphertext kept: {error:#}"), true),
             Some(Ok(mut selected)) => match selected.remove(&mut storage_boundary) {
                 Ok(()) => self.status("Mapping and selected ciphertext removed. Other loaded references to it will fail safely.", false),
                 Err(error) => {
                     let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
-                    self.status(format!("Mapping removed; ciphertext {}: {error}", if changed { "removed but storage durability uncertain" } else { "kept" }), true);
+                    self.status(format!("Mapping removed; ciphertext {}: {error:#}", if changed { "removed but storage durability uncertain" } else { "kept" }), true);
                 }
             },
         }
@@ -532,7 +540,7 @@ impl App {
         match result {
             Ok(()) => self.status("Encrypted value removed; configuration unchanged. References to it will fail safely.", false),
             Err(error) => self.status(format!(
-                "Ciphertext {}; configuration unchanged: {error}",
+                "Ciphertext {}; configuration unchanged: {error:#}",
                 if changed { "removed but storage durability uncertain" } else { "kept" }
             ), true),
         }
@@ -568,7 +576,7 @@ impl App {
                         Ok(_) => {
                             self.status("No eligible Ed25519 SSH agent keys. Esc cancels.", true);
                         }
-                        Err(error) => self.status(error.to_string(), true),
+                        Err(error) => self.status(format!("{error:#}"), true),
                     }
                 }
             }
@@ -631,9 +639,9 @@ impl App {
                             Err(error) => {
                                 let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
                                 self.status(if changed {
-                                    format!("Ciphertext and configuration replaced; config durability uncertain: {error}")
+                                    format!("Ciphertext and configuration replaced; config durability uncertain: {error:#}")
                                 } else {
-                                    format!("Ciphertext saved; configuration unchanged; existing references may now resolve the updated value; unused ciphertext may remain: {error}")
+                                    format!("Ciphertext saved; configuration unchanged; existing references may now resolve the updated value; unused ciphertext may remain: {error:#}")
                                 }, true);
                             }
                         }
@@ -642,8 +650,8 @@ impl App {
                     Err(error) => {
                         let changed = error.downcast_ref::<crate::config::PersistenceError>().is_some_and(|e| e.changed);
                         self.status(if changed {
-                            format!("Ciphertext replaced but durability uncertain; configuration unchanged; existing references may now resolve the updated value: {error}")
-                        } else { format!("Ciphertext unchanged; configuration unchanged: {error}") }, true);
+                            format!("Ciphertext replaced but durability uncertain; configuration unchanged; existing references may now resolve the updated value: {error:#}")
+                        } else { format!("Ciphertext unchanged; configuration unchanged: {error:#}") }, true);
                     }
                 }
             }
@@ -658,7 +666,7 @@ impl App {
                         self.revealed.insert(name, (v, Instant::now()));
                         self.status("Revealed for 30 seconds. Ctrl+R hides it now.", false);
                     }
-                    Err(e) => self.status(e.to_string(), true),
+                    Err(e) => self.status(format!("{e:#}"), true),
                 }
             }
             Message::Copy { generation, result } if generation == self.generation => {
@@ -668,7 +676,7 @@ impl App {
                         "Copied. Your desktop owns the clipboard; psst does not clear it.",
                         false,
                     ),
-                    Err(e) => self.status(e.to_string(), true),
+                    Err(e) => self.status(format!("{e:#}"), true),
                 }
             }
             Message::Preview { generation, result } if generation == self.generation => {
@@ -684,7 +692,7 @@ impl App {
                             false,
                         );
                     }
-                    Err(e) => self.status(e.to_string(), true),
+                    Err(e) => self.status(format!("{e:#}"), true),
                 }
             }
             Message::Browse { generation, result } if generation == self.generation => {
@@ -695,7 +703,7 @@ impl App {
                             browser.choices = choices;
                             self.status("Type filters · Enter selects · Esc goes back", false);
                         }
-                        Err(e) => self.status(e.to_string(), true),
+                        Err(e) => self.status(format!("{e:#}"), true),
                     }
                 }
             }
@@ -714,11 +722,10 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return true;
         }
-        if self.error_prompt() {
-            if key.code == KeyCode::Esc {
-                self.main();
-                self.status("Select an entry to edit, reveal or copy.", false);
-            }
+        if key.code == KeyCode::Esc && matches!(self.view, View::Main) && self.delete.is_none() {
+            return true;
+        }
+        if self.error_prompt() && key.code != KeyCode::Esc {
             return false;
         }
         if self.error_panel {
@@ -880,7 +887,7 @@ impl App {
                                 false,
                             );
                         }
-                        Err(error) => self.status(error.to_string(), true),
+                        Err(error) => self.status(format!("{error:#}"), true),
                     }
                 }
                 return false;
@@ -1261,7 +1268,9 @@ impl App {
                 self.selected = 0;
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(name) = self.selected_name() {
+                if let Some(name) = self.selected_name()
+                    && !self.loading.contains(&name)
+                {
                     self.invalidate();
                     self.delete = Some(name);
                     self.delete_remove = false;

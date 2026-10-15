@@ -339,6 +339,28 @@ fn dashboard_types_filters_backspace_erases_f1_returns_and_escape_quits() {
 }
 
 #[test]
+fn dashboard_escape_exits_immediately_after_an_error_even_when_filtered() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("psst.json");
+    let bytes = r#"{"EMPTY":{"source":"manual","value":""}}"#;
+    fs::write(&config, bytes).unwrap();
+    for filtered in [false, true] {
+        let mut pty = Pty::start(&config, None);
+        pty.wait_text("EMPTY");
+        if filtered {
+            pty.send(b"empty");
+            pty.wait_text("Filter: empty");
+        }
+        pty.send(b"\x12");
+        pty.wait_text("Manual secret is empty");
+        pty.wait_text("Esc  quit");
+        pty.send(b"\x1b");
+        pty.finish();
+        assert_eq!(fs::read_to_string(&config).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn editor_never_automatically_executes_shell_and_sigterm_restores_terminal() {
     let t = tempfile::tempdir().unwrap();
     let config = t.path().join("psst.json");
@@ -554,6 +576,94 @@ fn op_browser_search_selection_cancel_and_draft_save() {
     );
     pty.send(b"\x03");
     pty.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ctrl_y_copies_exact_bytes_and_reports_failure_in_all_five_views() {
+    use psst::providers::local_storage::StoredKey;
+    use std::sync::atomic::Ordering;
+    use support::agent::FakeAgent;
+
+    let fake = FakeAgent::new().await;
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let value = "  DUMMY_CLIPBOARD_雪\nsecond line\t ";
+    for view in ["dashboard", "reference", "browser", "manual", "encrypted"] {
+        let dir = tempfile::tempdir_in(&root).unwrap();
+        let config = dir.path().join("psst.json");
+        let source = if view == "manual" {
+            "manual"
+        } else {
+            "local-storage"
+        };
+        let reference = if view == "manual" { "" } else { "id" };
+        fs::write(
+            &config,
+            serde_json::json!({"KEY": {"source": source, "value": reference}}).to_string(),
+        )
+        .unwrap();
+        let config_before = fs::read(&config).unwrap();
+        let mut stored = StoredKey::load(dir.path(), fake.key.clone()).unwrap();
+        stored.set(&fake.client, "id", value).await.unwrap();
+        let storage = dir.path().join(".psst").join(fake.key.filename());
+        let storage_before = fs::read(&storage).unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let clipboard = dir.path().join("clipboard");
+        let fail = dir.path().join("fail-helper");
+        for helper in ["pbcopy", "wl-copy", "xclip", "xsel"] {
+            let path = bin.join(helper);
+            fs::write(
+                &path,
+                format!(
+                    "#!/bin/sh\nif [ -f '{}' ]; then exit 1; fi\n/bin/cat > '{}'\n",
+                    fail.display(),
+                    clipboard.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut pty = Pty::start_with_agent(&config, Some(&bin), Some(&fake.socket()));
+        pty.wait_text("KEY");
+        match view {
+            "reference" => {
+                pty.send(b"\r");
+                pty.wait_text("Environment name");
+            }
+            "browser" => pty.local_storage_browser(),
+            "manual" => {
+                pty.send(b"\r");
+                pty.wait_text("Environment name");
+                pty.send(b"\t\t");
+                pty.send(format!("\x1b[200~{value}\x1b[201~").as_bytes());
+            }
+            "encrypted" => {
+                pty.encrypted_draft("unsaved");
+                pty.send(format!("\x1b[200~{value}\x1b[201~").as_bytes());
+            }
+            _ => {}
+        }
+        let signs = fake.signs();
+        let connections = fake.state.connections.load(Ordering::SeqCst);
+        let draft = matches!(view, "manual" | "encrypted");
+        pty.send(b"\x19");
+        pty.wait_text("Copied.");
+        assert_eq!(fs::read(&clipboard).unwrap(), value.as_bytes(), "{view}");
+        assert_eq!(fake.signs(), signs + usize::from(!draft), "{view}");
+        fs::write(&fail, "fail").unwrap();
+        pty.send(b"\x19");
+        pty.wait_text("Clipboard helper failed");
+        assert_eq!(fs::read(&clipboard).unwrap(), value.as_bytes());
+        assert_eq!(fake.signs(), signs + 2 * usize::from(!draft), "{view}");
+        if draft {
+            assert_eq!(fake.state.connections.load(Ordering::SeqCst), connections);
+        }
+        assert!(!pty.history.contains("DUMMY_CLIPBOARD"));
+        assert_eq!(fs::read(&config).unwrap(), config_before);
+        assert_eq!(fs::read(&storage).unwrap(), storage_before);
+        pty.send(b"\x03");
+        pty.finish();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -617,7 +617,7 @@ async fn empty_manual_value_is_a_red_esc_only_prompt() {
             let buffer = terminal.backend().buffer();
             let text = screen_text(buffer);
             assert!(text.contains("Manual secret is empty"));
-            assert!(text.contains("Esc  back"));
+            assert!(text.contains(if preview { "Esc  back" } else { "Esc  quit" }));
             for absent in [
                 "Failure details",
                 "PgUp/PgDn",
@@ -636,14 +636,19 @@ async fn empty_manual_value_is_a_red_esc_only_prompt() {
                 Color::LightRed
             );
         }
-        assert!(!app.key(
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            &tx,
-            &mut tasks
-        ));
+        assert_eq!(
+            app.key(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                &tx,
+                &mut tasks
+            ),
+            !preview
+        );
         assert!(matches!(app.view, View::Main));
-        assert!(!app.error_panel);
-        assert!(!app.error_prompt());
+        if preview {
+            assert!(!app.error_panel);
+            assert!(!app.error_prompt());
+        }
     }
 }
 
@@ -671,7 +676,7 @@ fn missing_clipboard_helper_is_an_esc_only_prompt() {
             .map(|position| buffer[position].symbol())
             .collect();
         assert!(compact(&message).contains(&compact(&app.status)));
-        assert!(text.contains("Esc  back"));
+        assert!(text.contains("Esc  quit"));
         for absent in ["Failure details", "PgUp/PgDn", "Other keys", "q  quit"] {
             assert!(!text.contains(absent));
         }
@@ -679,14 +684,12 @@ fn missing_clipboard_helper_is_an_esc_only_prompt() {
     key(&mut app, KeyCode::Char('q'));
     assert!(app.error_prompt());
     let (tx, _) = mpsc::unbounded_channel();
-    assert!(!app.key(
+    assert!(app.key(
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         &tx,
         &mut Tasks(vec![]),
     ));
     assert!(matches!(app.view, View::Main));
-    assert!(!app.error_panel);
-    assert!(!app.error_prompt());
 }
 
 #[test]
@@ -1626,11 +1629,8 @@ async fn local_browser_creation_is_independent_of_environment_mapping() {
         result: Ok(vec![]),
     });
     assert!(matches!(app.view, View::Browser { .. }));
-    app.key(
-        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-        &tx,
-        &mut tasks,
-    );
+    // Inject listing rather than ever consulting the user's SSH_AUTH_SOCK.
+    app.create_with_identities(async { Ok(vec![]) }, &tx, &mut tasks);
     assert!(matches!(&app.view, View::Create(c) if c.field == 1));
     assert!(!screen(&mut app).contains("Environment name"));
     if let View::Create(c) = &mut app.view {
@@ -2049,6 +2049,83 @@ fn f1_help_returns_to_each_view_without_losing_draft_or_filter() {
         }
         assert!(!app.config.path.exists());
     }
+}
+
+#[test]
+fn dashboard_delete_is_inert_while_selected_entry_is_loading() {
+    let mut app = legacy_app();
+    app.loading.insert("SECRET_1".into());
+    let generation = app.generation;
+    let status = app.status.clone();
+    let entries = app.config.entries.clone();
+    let (tx, _) = mpsc::unbounded_channel();
+    let mut tasks = Tasks(vec![]);
+    assert!(!app.key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        &tx,
+        &mut tasks,
+    ));
+    assert!(app.loading.contains("SECRET_1"));
+    assert_eq!(app.loading.len(), 1);
+    assert_eq!(app.generation, generation);
+    assert_eq!(app.status, status);
+    assert!(app.config.entries == entries);
+    assert!(app.delete.is_none() && app.browser_delete.is_none());
+    assert!(!app.delete_busy && !app.delete_remove);
+    assert!(!app.config.path.exists());
+}
+
+#[test]
+fn dashboard_esc_quits_after_errors_with_or_without_a_filter() {
+    for query in ["", "secret"] {
+        for message in [
+            "Manual secret is empty",
+            "No clipboard helper found (install wl-copy, xclip or xsel)",
+            "SSH agent refused signing",
+        ] {
+            let mut app = legacy_app();
+            app.query = query.into();
+            app.message(Message::Copy {
+                generation: app.generation,
+                result: Err(anyhow::anyhow!(message)),
+            });
+            let (tx, _) = mpsc::unbounded_channel();
+            assert!(app.key(
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                &tx,
+                &mut Tasks(vec![]),
+            ));
+            assert_eq!(app.query, query);
+            assert_eq!(app.config.entries.len(), 2);
+            assert!(!app.config.path.exists());
+        }
+    }
+}
+
+#[test]
+fn nested_error_details_preserve_causes_without_rendering_secrets_or_controls() {
+    let mut app = legacy_app();
+    app.config.entries["SECRET_1"].value = "NEVER_RENDER_THIS_SECRET".into();
+    app.message(Message::Reveal {
+        generation: app.generation,
+        name: "SECRET_1".into(),
+        result: Err(anyhow::anyhow!("agent disconnected\u{1b}")
+            .context("signing failed")
+            .context("fetch failed")),
+    });
+    let text = screen(&mut app);
+    for expected in [
+        "Failure details",
+        "fetch failed",
+        "signing failed",
+        "agent disconnected",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert!(!text.contains("NEVER_RENDER_THIS_SECRET"));
+    assert!(!text.contains('\u{1b}'));
+    key(&mut app, KeyCode::PageDown);
+    assert_eq!(app.error_scroll, 1);
 }
 
 #[test]

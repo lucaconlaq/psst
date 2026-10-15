@@ -98,6 +98,66 @@ async fn create_replace_remove_preserve_ids_users_and_private_permissions() {
 }
 
 #[tokio::test]
+async fn distinct_record_limit_accepts_1024_and_rejects_1025_before_signing() {
+    use psst::providers::local_storage::KeyFile;
+
+    let fake = FakeAgent::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let mut document: KeyFile =
+        serde_json::from_slice(include_bytes!("fixtures/local-storage-v1.json")).unwrap();
+    let template = document.records[0].clone();
+    // Size validation is metadata-only; no plaintext is requested here.
+    document.records = (0..1024)
+        .map(|index| {
+            let mut record = template.clone();
+            record.id = format!("id-{index}");
+            record
+        })
+        .collect();
+    let bytes = document.encode(&fake.key).unwrap();
+    assert_eq!(
+        KeyFile::parse(&bytes, &fake.key, &fake.key.filename())
+            .unwrap()
+            .records
+            .len(),
+        1024
+    );
+    let storage = root.join(".psst");
+    fs::create_dir(&storage).unwrap();
+    fs::set_permissions(&storage, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = storage.join(fake.key.filename());
+    fs::write(&path, &bytes).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        StoredKey::load(&root, fake.key.clone())
+            .unwrap()
+            .records()
+            .len(),
+        1024
+    );
+    let mut extra = template;
+    extra.id = "id-1024".into();
+    document.records.push(extra);
+    assert!(document.encode(&fake.key).is_err());
+    let oversized = serde_json::to_vec(&document).unwrap();
+    assert!(KeyFile::parse(&oversized, &fake.key, &fake.key.filename()).is_err());
+    fs::write(&path, &oversized).unwrap();
+    assert!(StoredKey::load(&root, fake.key.clone()).is_err());
+    let author = psst::providers::get("local-storage")
+        .unwrap()
+        .author()
+        .unwrap();
+    let identity = psst::providers::Identity {
+        fingerprint: fake.key.fingerprint(),
+        token: fake.key.blob(),
+    };
+    assert!(author.prepare(&root, "new", &identity).is_err());
+    assert_eq!(fake.signs(), 0);
+    assert_eq!(fs::read(&path).unwrap(), oversized);
+}
+
+#[tokio::test]
 async fn loaded_conflicts_and_lock_contention_do_not_sign_or_clobber() {
     use fs2::FileExt;
     let fake = FakeAgent::new().await;

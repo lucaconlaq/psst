@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use data_encoding::{BASE64_NOPAD, HEXLOWER};
+#[cfg(test)]
 use fs2::FileExt;
 
 use super::{Agent, Envelope, FILE_LIMIT, KeyFile, PublicKey, decode, validate_id, validate_value};
-use crate::config::{PersistenceError, WriteBoundary, atomic_write_checked};
+use crate::config::{FileLock, PersistenceError, WriteBoundary, atomic_write_checked};
 
 /// Loaded bytes are retained to reject edits made since loading.
 /// Callers supply the selected configuration directory, never the caller cwd.
@@ -97,7 +98,7 @@ impl StoredKey {
         self.commit(next, boundary)
     }
 
-    fn lock(&self) -> Result<File> {
+    fn lock(&self) -> Result<FileLock> {
         let dir = self.path.parent().context("Missing storage directory")?;
         check_path(dir)?;
         let config_dir = dir.parent().context("Missing configuration directory")?;
@@ -133,8 +134,8 @@ impl StoredKey {
         check_path(&path)?;
         let lock = options().create(true).write(true).mode(0o600).open(&path)?;
         private_file(&lock)?;
-        lock.try_lock_exclusive()
-            .context("Local-storage key is locked; try again")?;
+        let lock =
+            FileLock::try_exclusive(lock).context("Local-storage key is locked; try again")?;
         ensure!(
             read(&self.path)? == self.baseline,
             "Local-storage changed on disk; reload before saving"

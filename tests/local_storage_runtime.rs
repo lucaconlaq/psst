@@ -169,6 +169,23 @@ async fn failures_stop_all_consumers_before_launch_or_export() {
         agent.fault(fault);
         fail_stop(&cfg, caller.path(), Some(&agent)).await;
     }
+    // Override listing with a non-fault sentinel so failures reach signing.
+    agent
+        .state
+        .listing_fault
+        .store(usize::MAX, Ordering::SeqCst);
+    for fault in [
+        Fault::Refuse,
+        Fault::Disconnect,
+        Fault::Oversized,
+        Fault::Trailing,
+    ] {
+        agent.fault(fault);
+        let before = agent.signs();
+        fail_stop(&cfg, caller.path(), Some(&agent)).await;
+        assert_eq!(agent.signs(), before + 4);
+    }
+    agent.state.listing_fault.store(0, Ordering::SeqCst);
     agent.fault(Fault::None);
     agent.delay();
     let before = agent.signs();
@@ -242,6 +259,50 @@ async fn fail_stop_copy_only(cfg: &Path, cwd: &Path, agent: &FakeAgent) {
     cmd.env("PATH", &bin).args(["--copy", "SECRET"]);
     assert!(!output(cmd).await.status.success());
     assert!(!cwd.join("launched").exists());
+}
+
+#[tokio::test]
+async fn valid_legacy_storage_is_ignored_and_never_migrated_or_modified() {
+    let agent = FakeAgent::new().await;
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(&root).unwrap();
+    let caller = tempfile::tempdir_in(&root).unwrap();
+    let fixture: KeyFile =
+        serde_json::from_slice(include_bytes!("fixtures/local-storage-v1.json")).unwrap();
+    let direct = store(dir.path(), &agent.key, fixture.records);
+    let legacy = dir.path().join(".psst/local-storage");
+    fs::create_dir(&legacy).unwrap();
+    fs::set_permissions(&legacy, fs::Permissions::from_mode(0o700)).unwrap();
+    let old = legacy.join(agent.key.filename());
+    fs::rename(&direct, &old).unwrap();
+    let before = fs::read(&old).unwrap();
+    let level = providers::get("local-storage").unwrap().browser().unwrap();
+    assert!(
+        psst::browser::list(&level, dir.path())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let cfg = config(dir.path(), "fixture");
+    fail_stop(&cfg, caller.path(), Some(&agent)).await;
+    assert_eq!(agent.signs(), 0);
+    assert!(!direct.exists());
+    let mut stored =
+        psst::providers::local_storage::StoredKey::load(dir.path(), agent.key.clone()).unwrap();
+    assert!(stored.records().is_empty());
+    stored
+        .set(&agent.client, "direct-only", "new dummy value")
+        .await
+        .unwrap();
+    let choices = psst::browser::list(&level, dir.path()).await.unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].label, "direct-only");
+    assert_eq!(fs::read(&old).unwrap(), before);
+    assert_eq!(fs::read_dir(&legacy).unwrap().count(), 1);
+    assert!(direct.exists());
+    let signs = agent.signs();
+    fail_stop(&cfg, caller.path(), Some(&agent)).await;
+    assert_eq!(agent.signs(), signs);
 }
 
 #[tokio::test]
