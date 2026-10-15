@@ -24,9 +24,9 @@ and `rand_core 0.6.4`/`getrandom 0.2.17`. These are established compatible API
 families, not a claim to use the newest major releases. Direct `aes 0.8.4`,
 `ghash 0.5.1`, and `polyval 0.6.2` dependencies enable cleanup features on
 AES-GCM's existing graph. `data-encoding` supplies canonical base64 and hex.
-Production builds do not enable Dalek hazmat or sign locally. Published library
-checks, compatibility evidence, and their limits are recorded in
-[ticket 07](tickets/local-storage/07-experimental-release-readiness.md#selected-dependencysource-checks).
+Production builds do not enable Dalek hazmat or sign locally. Selected-library
+checks and compatibility evidence remain in the retired tickets' Git history;
+they do not constitute a current full dependency-security audit.
 
 ## Main Modules
 
@@ -184,7 +184,7 @@ saves use atomic replacement and loaded-content conflict detection.
 Per-key ciphertext JSON and lock files live directly in `.psst/` beside the
 selected configuration, never beside the caller's working directory. Older
 `.psst/local-storage/` files are neither read nor automatically migrated.
-[README](../README.md#experimental-local-storage) describes manual relocation.
+Manual relocation must preserve private permissions and avoid filename collisions.
 
 Identity is `(ID, public key)`. IDs are exact, case-sensitive UTF-8, 1–256 bytes,
 without `#` or Unicode control characters (`char::is_control`). They are never
@@ -323,10 +323,10 @@ or invoking SSH/encryption executables. Compatible agents are allowed without
 vendor checks; a vendor-looking socket alone is not proof of custody. Consented
 macOS ARM64 1Password functional checks passed with process/socket ownership and
 code-signature identification. Authorization settings remain undocumented, and
-Linux live checks and independent crypto/format review remain outstanding; see
-[ticket 07](tickets/local-storage/07-experimental-release-readiness.md) for scoped
-evidence, not blanket release approval. Setup and key-recovery guidance belong
-in [README](../README.md#experimental-local-storage).
+Linux live checks and independent crypto/format review remain outstanding.
+The macOS results are scoped evidence, not blanket release approval. The
+[spec](specs/01-local-storage.md#further-notes) records security and recovery
+constraints.
 
 ## Testing Seams
 
@@ -367,10 +367,10 @@ Focused tests pin AAD/challenge bytes, signatures, derived keys, and fake-agent
 decryption. Fault injection uses test-only Dalek hazmat to model two valid but
 different signatures; it is not a production signing path or custom primitive.
 Persistence injection distinguishes completed replacement from durability
-failure. The acceptance inventory and historical command/platform results live
-in [ticket 07](tickets/local-storage/07-experimental-release-readiness.md), not
-in this architectural description. Neither vectors nor self-tests constitute
-independent crypto review or verified 1Password compatibility.
+failure. The acceptance inventory and historical command/platform results remain
+in the retired tickets' Git history, not in this architectural description.
+Neither vectors nor self-tests constitute independent crypto review or verified
+1Password compatibility.
 
 ## Important Constraints
 

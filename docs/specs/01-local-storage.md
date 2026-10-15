@@ -2,6 +2,12 @@
 
 Source idea: [Local storage](../ideas/01-local-storage.md)
 
+**Status:** completed.
+
+Implementation accepted by the user; all seven execution tickets are retired.
+This status records implementation acceptance, not independent-review approval.
+The release gates below remain distinct from implementation completion.
+
 ## Problem Statement
 
 Repository users need local encrypted secrets without a hosted secret manager, while sharing environment-reference configuration and keeping each user's values private. This adds key-lifecycle responsibilities that existing external providers may already handle for some users.
@@ -20,7 +26,7 @@ Add the `local-storage` provider alongside existing providers. Keep references i
 
 ### Context and ownership
 
-The source idea's repository findings describe the historical preimplementation baseline, not the current system. See [Architecture](../ARCHITECTURE.md) for current module boundaries, selected v1 fields/byte encodings, filenames, libraries, and internal APIs. Those implementation details remain delegated within this spec's behavioral and security constraints, not a promised stable extension API. [Ticket 07](../tickets/local-storage/07-experimental-release-readiness.md) owns recorded verification evidence and outstanding release blockers; neither implementation nor documentation proves release readiness.
+The source idea's repository findings describe the historical preimplementation baseline, not the current system. See [Architecture](../ARCHITECTURE.md) for current module boundaries, selected v1 fields/byte encodings, filenames, libraries, and internal APIs. Those implementation details remain delegated within this spec's behavioral and security constraints, not a promised stable extension API. Historical verification evidence remains in the retired tickets' Git history; neither implementation nor documentation proves release readiness.
 
 ### Agreed provider, identity, and storage contracts
 
@@ -82,7 +88,7 @@ At spec creation, existing binary-level CLI tests use isolated configurations, f
 - Require the automated fake-agent, crypto/format, persistence, TUI, and fail-stop regressions above, plus existing formatting, Clippy, tests, and release builds on Linux/macOS x86_64 and ARM64 targets. Verify Rust 1.88 and selected dependencies explicitly; stable CI alone does not establish minimum-version compatibility.
 - Require consented, opt-in real 1Password end-to-end checks on Linux and macOS covering creation, subsequent decrypt/update, agent approval/rejection, and repeatability. Normal CI must never contact personal agents or keys. Record tested integrations rather than assuming socket identity proves 1Password custody.
 - Require setup, format, recovery/manual-migration, and security documentation explaining the threat boundary and accepted limitations below. Mark the feature experimental until independent crypto/format review establishes the production-readiness gate.
-- These are required gates, not claims of completed verification. [Ticket 07](../tickets/local-storage/07-experimental-release-readiness.md) records partial implementation evidence and unmet gates; experimental labeling does not waive them. The source idea records only a user-authorized toy signature/crypto round-trip and modified-tag rejection; that did not validate a production format, prove 1Password integration, or constitute independent review.
+- These are required gates, not claims of completed verification. Implementation acceptance and ticket retirement do not establish that these gates passed. The source idea records only a user-authorized toy signature/crypto round-trip and modified-tag rejection; that did not validate a production format, prove 1Password integration, or constitute independent review.
 
 ## Out of Scope
 
@@ -98,4 +104,4 @@ At spec creation, existing binary-level CLI tests use isolated configurations, f
 - Agent signing authorization grants durable decryption capability: an authorized process can retain signatures/derived keys after the agent locks. Agent-only custody does not keep derived keys out of psst memory. Warn against untrusted agent forwarding and recommend per-operation confirmation; actual approval frequency depends on agent settings.
 - Recovery depends on preserving the SSH key in 1Password. Losing it loses decryptability. Manually migrate while the old key works by creating new `(ID,key)` records and updating explicit selectors as needed. Rotation cannot revoke old Git history or captured derived keys.
 - Editor layout beyond the specified controls and additional conservative input limits remain delegated alongside implementation format/library details. Current provider/editor interfaces are architecture-owned, not settled as stable APIs by this spec.
-- The source idea retains the original Q17 nested-directory choice and Q27 browser exclusion; subsequent user-authorized changes select direct `.psst/` storage and the integrated provider browser described here, without adding a standalone management application. Completed tickets retain their originally accepted scope and verification provenance, explicitly marked historical where superseded. Ticket 07 inventories the current workflows separately from historical verification. Documentation alignment does not upgrade those approvals or statuses.
+- The source idea retains the original Q17 nested-directory choice and Q27 browser exclusion; subsequent user-authorized changes select direct `.psst/` storage and the integrated provider browser described here, without adding a standalone management application. The retired tickets' originally accepted scope and verification provenance remain in Git history. Retiring execution tickets does not waive release gates or upgrade independent-review approval.
