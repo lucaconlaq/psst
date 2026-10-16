@@ -4,8 +4,7 @@
 
 psst manages local configuration entries and resolves secrets for interactive use
 or injection into a command's environment. Behavioral requirements belong to the
-[local-storage spec](specs/01-local-storage.md); this document describes the
-implemented modules, interfaces, and selected format.
+[specs](specs/); this document describes the implemented modules, interfaces, and selected format.
 
 ## Entry Points
 
@@ -400,5 +399,4 @@ while creating new records and updating mappings; it cannot revoke Git history
 or captured signatures/keys. No metadata hiding, replay/rollback protection,
 automatic cleanup/migration/rotation, recovery recipients, multi-recipient
 sharing, other key types, private-key reads, plugins, or Windows support is
-provided. The full scope and release gates remain owned by the
-[spec](specs/01-local-storage.md).
+provided.
