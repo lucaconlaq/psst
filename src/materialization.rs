@@ -445,23 +445,26 @@ async fn persist_plan<F: std::future::Future<Output = ()>>(
 // Nonblocking terminal input avoids a detached blocking stdin reader that
 // would outlive cancellation and prevent runtime shutdown.
 async fn consent() -> Result<bool> {
-    let terminal = OpenOptions::new()
+    let mut terminal = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
         .open("/dev/tty")?;
-    let terminal = tokio::io::unix::AsyncFd::new(terminal)?;
     let mut answer = Vec::new();
     loop {
-        let mut ready = terminal.readable().await?;
         let mut byte = [0];
-        match ready.try_io(|fd| fd.get_ref().read(&mut byte)) {
-            Err(_) => continue,
-            Ok(Err(error)) => return Err(error.into()),
-            Ok(Ok(0)) => return Ok(false),
-            Ok(Ok(_)) if byte[0] == b'\n' => {
+        match terminal.read(&mut byte) {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                // macOS kqueue cannot monitor /dev/tty. Keep reads nonblocking
+                // and the wait cancellable without a detached reader thread.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+            Ok(0) => return Ok(false),
+            Ok(_) if byte[0] == b'\n' => {
                 return Ok(answer.eq_ignore_ascii_case(b"y") || answer.eq_ignore_ascii_case(b"yes"));
             }
-            Ok(Ok(_)) => {
+            Ok(_) => {
                 if answer.len() >= 16 {
                     return Ok(false);
                 }

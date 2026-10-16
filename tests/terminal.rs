@@ -354,7 +354,7 @@ fn managed_file_ctrl_c_during_subprocess_resolution_and_consent() {
                     .starts_with("psst-files-")
             })
             .collect();
-        assert_eq!(stages.len(), 1);
+        assert_eq!(stages.len(), 1, "{}", pty.history);
         assert_eq!(
             fs::read_dir(&stages[0]).unwrap().count(),
             if consent { 2 } else { 1 },
