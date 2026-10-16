@@ -319,7 +319,7 @@ fn cancel_materialization(pty: &mut Pty, root: &Path) {
 #[test]
 fn managed_file_ctrl_c_during_subprocess_resolution_and_consent() {
     for consent in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let config = root.path().join("custom.json");
         if consent {
             fs::write(root.path().join("wait"), b"ORIGINAL_PRIVATE").unwrap();
@@ -397,7 +397,7 @@ async fn managed_file_ctrl_c_during_agent_signing_closes_socket_and_staging() {
     use std::sync::atomic::Ordering;
     let agent = support::agent::FakeAgent::new().await;
     agent.delay();
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     fs::create_dir(root.path().join(".psst")).unwrap();
     fs::set_permissions(root.path().join(".psst"), fs::Permissions::from_mode(0o700)).unwrap();
     let record = root.path().join(".psst").join(agent.key.filename());
@@ -444,7 +444,7 @@ fn managed_file_batch_consent_approval_refusal_and_stale_targets() {
         (b"\n", false, false),
         (b"yes\n", true, true),
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let config = root.path().join("custom.json");
         let first = root.path().join("replace-one");
         let second = root.path().join("replace-two");
@@ -653,9 +653,12 @@ fn dashboard_types_filters_backspace_erases_f1_returns_and_escape_quits() {
         pty.send(b"\x1bOP"); // F1 in an xterm terminal.
         pty.wait_text("Help");
         pty.send(b"\x1b");
+        pty.wait_without_text("Help");
         pty.wait_text("Entries · 2 · Filter: a");
         if !filtered {
             pty.send(b"\x7f");
+            // The entry count is unchanged, so wait for the filter to disappear.
+            pty.wait_without_text("Filter: a");
             pty.wait_text("Entries · 2");
         }
         pty.wait_text("Esc  quit");
@@ -1743,7 +1746,7 @@ async fn file_authoring_linking_and_browser_deletion_keep_destinations_untouched
     use psst::config::Config;
     use psst::providers::local_storage::StoredKey;
     let fake = support::agent::FakeAgent::new().await;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = support::tempdir();
     let config = dir.path().join("psst.json");
     fs::write(
         &config,
