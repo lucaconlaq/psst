@@ -48,7 +48,7 @@ async fn fake_agent_failures_are_best_effort_only_for_materialization() {
     let agent = FakeAgent::new().await;
     for fault in [Fault::Refuse, Fault::InvalidSignature] {
         agent.fault(fault);
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let root = root.path();
         fs::create_dir(root.join(".psst")).unwrap();
         fs::set_permissions(root.join(".psst"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -112,7 +112,7 @@ async fn fake_agent_failures_are_best_effort_only_for_materialization() {
 #[test]
 fn invalid_directory_containing_staging_does_not_abort_independent_files() {
     for directory_first in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let root = root.path();
         let bad = (
             root.to_str().unwrap(),
@@ -157,7 +157,7 @@ fn invalid_directory_containing_staging_does_not_abort_independent_files() {
 #[test]
 fn unknown_linux_mount_rejects_whole_batch_before_fetch() {
     for name in ["Output", "é", "e\u{301}", "K"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let root = root.path();
         private(&root.join("existing"), b"ORIGINAL_PRIVATE");
         let before = fs::metadata(root.join("existing")).unwrap();
@@ -196,7 +196,7 @@ fn unknown_linux_mount_rejects_whole_batch_before_fetch() {
 #[test]
 fn absent_case_aliases_are_preflighted_using_filesystem_semantics() {
     for (first, second) in [("Output", "output"), ("Missing/Output", "missing/output")] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let root = root.path();
         // Fixture setup detects native volume behavior without command-time
         // destination probes. Both candidate destinations remain absent.
@@ -232,7 +232,7 @@ fn absent_case_aliases_are_preflighted_using_filesystem_semantics() {
 fn directory_only_suffixes_fail_independently_without_modifying_targets() {
     for suffix in ["/", "/."] {
         for existing in [None, Some("OLD_PRIVATE"), Some("NEW_PRIVATE")] {
-            let root = tempfile::tempdir().unwrap();
+            let root = support::tempdir();
             let root = root.path();
             let destination = format!("output{suffix}");
             if let Some(contents) = existing {
@@ -301,7 +301,7 @@ fn empty_managed_sets_succeed_without_usable_system_temp() {
         json!({"TOKEN": {"source":"manual", "value":"PRIVATE"}}),
     ] {
         for missing in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = support::tempdir();
             let root = root.path();
             fs::write(root.join("custom.json"), config.to_string()).unwrap();
             let bad_temp = root.join("bad-temp");
@@ -331,7 +331,7 @@ fn empty_managed_sets_succeed_without_usable_system_temp() {
 #[test]
 fn missing_prefix_parent_traversal_requires_consent_for_exposed_replacements() {
     for existing in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let root = root.path();
         if existing {
             private(&root.join("output"), b"OLD_PRIVATE");
@@ -380,7 +380,7 @@ fn missing_prefix_parent_traversal_requires_consent_for_exposed_replacements() {
 
 #[test]
 fn identical_missing_prefix_traversal_is_reachable_without_replacement() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let root = root.path();
     private(&root.join("output"), b"SAME_PRIVATE");
     let before = fs::metadata(root.join("output")).unwrap();
@@ -418,7 +418,7 @@ fn missing_prefix_hardlink_aliases_stop_before_fetch_or_writes() {
         ["one", "missing/../two"],
         ["missing/../one", "two"],
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let root = root.path();
         private(&root.join("one"), b"OLD_PRIVATE");
         fs::hard_link(root.join("one"), root.join("two")).unwrap();
@@ -460,7 +460,7 @@ fn missing_prefix_protected_hardlinks_stop_before_fetch_or_writes() {
         ".psst/key.json",
         ".psst/key.lock",
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let root = root.path();
         fs::write(
             root.join("custom.json"),
@@ -499,7 +499,7 @@ fn missing_prefix_protected_hardlinks_stop_before_fetch_or_writes() {
 
 #[test]
 fn restrictive_umask_still_creates_exact_private_parents() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     fs::create_dir(root.path().join("existing")).unwrap();
     fs::set_permissions(
         root.path().join("existing"),
@@ -551,7 +551,7 @@ fn restrictive_umask_still_creates_exact_private_parents() {
 
 #[test]
 fn mixed_batch_requires_consent_before_new_files_then_best_effort_private_writes() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let root = root.path();
     fs::create_dir(root.join("existing")).unwrap();
     fs::set_permissions(root.join("existing"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -647,7 +647,7 @@ fn mixed_batch_requires_consent_before_new_files_then_best_effort_private_writes
 
 #[test]
 fn empty_new_and_no_change_runs_need_no_prompt_and_help_exposes_command() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let root = root.path();
     fs::write(root.join("custom.json"), "{}").unwrap();
     let output = command(root).assert().success().get_output().clone();
@@ -684,7 +684,7 @@ fn empty_new_and_no_change_runs_need_no_prompt_and_help_exposes_command() {
 
 #[test]
 fn yes_does_not_bypass_symlinks_or_preflight_and_dispatch_preserves_wrapped_argv() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let root = root.path();
     private(&root.join("target"), b"OLD_PRIVATE");
     symlink(root.join("target"), root.join("link")).unwrap();

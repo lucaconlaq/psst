@@ -1,6 +1,12 @@
 use super::*;
 use crate::config::{Entry, WriteBoundary};
 
+pub(super) fn tempdir() -> tempfile::TempDir {
+    // macOS temporary roots can contain symlinks, which destinations reject.
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    tempfile::tempdir_in(root).unwrap()
+}
+
 fn configuration(dir: &Path, names: &[&str]) -> Config {
     let mut config = Config::load(dir.join("custom.json")).unwrap();
     for name in names {
@@ -33,7 +39,7 @@ fn commit(
 #[tokio::test]
 async fn missing_name_aliases_reject_before_providers_or_staging() {
     for names in [["Output", "output"], ["Missing/Output", "missing/output"]] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let mut config = configuration(root.path(), &names);
         for entry in config.entries.values_mut() {
             entry.source = "shell".into();
@@ -61,7 +67,7 @@ async fn mounted_namespace_aliases_reject_before_fetch() {
         "storage-subdirectory",
         "storage-file",
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let real = root.path().join("real");
         let alias = root.path().join("alias");
         let storage = root.path().join(".psst");
@@ -124,7 +130,7 @@ async fn mounted_namespace_aliases_reject_before_fetch() {
 async fn equivalent_owned_parents_work_in_both_orders_after_failures() {
     for names in [["New/one", "new/two"], ["new/one", "New/two"]] {
         for fail_first in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             let planned = plan_with_names(&configuration(root.path(), &names), |path| {
                 names::key_with(path, |_| Ok(Some(names::Semantics::AsciiInsensitive)))
             })
@@ -180,7 +186,7 @@ async fn bind_alias_owned_parents_survive_creation_and_failed_writes() {
     ] {
         for fail_first in [false, true] {
             for replace_parent in [false, true] {
-                let root = tempfile::tempdir().unwrap();
+                let root = tempdir();
                 let real = root.path().join("real");
                 let alias = root.path().join("alias");
                 fs::create_dir(&real).unwrap();
@@ -254,7 +260,7 @@ async fn bind_alias_owned_parents_survive_creation_and_failed_writes() {
 async fn native_case_equivalent_owned_parents() {
     for names in [["New/one", "new/two"], ["new/one", "New/two"]] {
         for fail_first in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             fs::create_dir(root.path().join("Probe")).unwrap();
             let insensitive = root.path().join("probe").exists();
             fs::remove_dir(root.path().join("Probe")).unwrap();
@@ -293,7 +299,7 @@ async fn name_capabilities_gate_the_entire_batch_before_fetch_without_probes() {
         "mac-insensitive",
     ] {
         for destination in ["Output", "é", "e\u{301}", "K", "missing/非ASCII"] {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             let restricted = root.path().join("restricted");
             fs::create_dir(&restricted).unwrap();
             let existing = root.path().join("existing");
@@ -338,7 +344,7 @@ async fn name_capabilities_gate_the_entire_batch_before_fetch_without_probes() {
 
     // Exact byte semantics support distinct Unicode spellings; successful
     // planning fetches but still creates no destination or missing parents.
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let mut config = configuration(root.path(), &["é", "e\u{301}", "missing/非ASCII"]);
     for entry in config.entries.values_mut() {
         entry.source = "shell".into();
@@ -356,7 +362,7 @@ async fn name_capabilities_gate_the_entire_batch_before_fetch_without_probes() {
 
 #[tokio::test]
 async fn shared_missing_parents_accept_only_owned_creations_even_after_failure() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let config = configuration(root.path(), &["new/deep/one", "new/two", "new/deep/three"]);
     let planned = plan(&config).await.unwrap();
     let mut created = HashMap::new();
@@ -405,7 +411,7 @@ async fn shared_parent_spellings_work_in_both_orders_and_after_failed_write() {
         for (existing_prefix, fail_first) in
             [(true, false), (true, true), (false, false), (false, true)]
         {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             if existing_prefix {
                 fs::create_dir(root.path().join("sub")).unwrap();
             }
@@ -447,7 +453,7 @@ async fn shared_parent_spellings_work_in_both_orders_and_after_failed_write() {
 async fn missing_prefix_traversal_classifies_targets_and_rechecks_conflicts() {
     for existing in [false, true] {
         for mutate in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             let target = root.path().join("output");
             if existing {
                 fs::write(&target, b"old").unwrap();
@@ -489,7 +495,7 @@ async fn missing_prefix_traversal_classifies_targets_and_rechecks_conflicts() {
 #[tokio::test]
 async fn unchanged_traversal_establishes_and_syncs_parents_without_replacing_target() {
     for fail_sync in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let target = root.path().join("output");
         fs::write(&target, b"NEW_PRIVATE_CONTENTS").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
@@ -561,7 +567,7 @@ async fn missing_prefix_traversal_does_not_hide_symlinks_or_nonregular_targets()
     use std::os::unix::fs::symlink;
 
     for name in ["new/../link/../output", "new/../link", "new/../directory"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         fs::create_dir(root.path().join("directory")).unwrap();
         symlink(root.path().join("directory"), root.path().join("link")).unwrap();
         let planned = plan(&configuration(root.path(), &[name, "good"]))
@@ -575,7 +581,7 @@ async fn missing_prefix_traversal_does_not_hide_symlinks_or_nonregular_targets()
 
 #[tokio::test]
 async fn moved_parent_cleanup_removes_populated_temporary_at_replace_boundary() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     fs::create_dir(root.path().join("parent")).unwrap();
     let target = root.path().join("parent/file");
     fs::write(&target, b"old").unwrap();
@@ -617,7 +623,7 @@ async fn moved_parent_cleanup_removes_populated_temporary_at_replace_boundary() 
 #[tokio::test]
 async fn stale_targets_and_ancestors_fail_without_clobbering_independent_files() {
     for mutation in ["target", "new", "ancestor"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         fs::create_dir(root.path().join("parent")).unwrap();
         let target = root.path().join("parent/file");
         if mutation != "new" {
@@ -645,7 +651,7 @@ async fn stale_targets_and_ancestors_fail_without_clobbering_independent_files()
 
 #[tokio::test]
 async fn owned_parent_replacement_and_changed_noop_are_still_conflicts() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let config = configuration(root.path(), &["new/one", "new/two", "same", "good"]);
     let same = root.path().join("same");
     fs::write(&same, b"NEW_PRIVATE_CONTENTS").unwrap();
@@ -679,7 +685,7 @@ async fn write_faults_cleanup_and_distinguish_completed_replacement() {
         WriteBoundary::Replace,
         WriteBoundary::DirectorySync,
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let target = root.path().join("file");
         fs::write(&target, b"old").unwrap();
         let config = configuration(root.path(), &["file", "good"]);
@@ -716,7 +722,7 @@ async fn ancestor_sync_faults_precede_replacement_and_retry_owned_entries() {
     // The first two syncs establish new in root, then deep in new. The
     // third sync persists the completed destination replacement in deep.
     for failure in 1..=3 {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let planned = plan(&configuration(
             root.path(),
             &["new/deep/one", "new/deep/two", "good"],
@@ -793,7 +799,7 @@ async fn ancestor_sync_faults_precede_replacement_and_retry_owned_entries() {
 
 #[tokio::test]
 async fn final_recheck_catches_changes_during_temporary_write() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let target = root.path().join("file");
     fs::write(&target, b"old").unwrap();
     let config = configuration(root.path(), &["file"]);

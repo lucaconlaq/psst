@@ -50,7 +50,8 @@ fn semantics(parent: &Path) -> Result<Option<Semantics>> {
     // Do not infer semantics from the OS or an underlying/overlay filesystem.
     // This intentionally supports only the ext family, with per-directory
     // casefold checked even when all supplied names happen to be ASCII.
-    if filesystem.f_type != libc::EXT4_SUPER_MAGIC {
+    // GNU and musl expose f_type with different signedness.
+    if i128::from(filesystem.f_type) != i128::from(libc::EXT4_SUPER_MAGIC) {
         bail!(UNKNOWN);
     }
     // The ioctl number encodes long, but the kernel returns an int. Reserve

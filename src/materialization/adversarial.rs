@@ -1,3 +1,4 @@
+use super::tests::tempdir;
 use super::*;
 use crate::config::{Entry, WriteBoundary};
 use std::time::{Duration, Instant};
@@ -20,7 +21,7 @@ fn configuration(root: &Path, destinations: &[&str]) -> Config {
 #[tokio::test]
 async fn staging_faults_remove_partial_files_and_preserve_independent_results() {
     for failure in [WriteBoundary::Write, WriteBoundary::FileSync] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let config = configuration(root.path(), &["before", "fault", "after"]);
         let mut writes = 0;
         let planned = plan_with_staging(&config, names::key, inode, |at| {
@@ -88,7 +89,7 @@ async fn populated_temporary_faults_preserve_bytes_and_best_effort_status() {
             WriteBoundary::Replace,
             WriteBoundary::DirectorySync,
         ] {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             let target = root.path().join("fault");
             if existing {
                 fs::write(&target, b"ORIGINAL_PRIVATE").unwrap();
@@ -167,7 +168,7 @@ async fn populated_temporary_faults_preserve_bytes_and_best_effort_status() {
 #[tokio::test]
 async fn appeared_and_atomically_replaced_targets_reject_stale_consent() {
     for existing in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let target = root.path().join("target");
         if existing {
             fs::write(&target, b"ORIGINAL_PRIVATE").unwrap();
@@ -210,7 +211,7 @@ async fn symlink_races_at_final_boundary_refuse_changed_paths_only() {
     use std::os::unix::fs::symlink;
     for ancestor in [false, true] {
         for existing in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             fs::create_dir(root.path().join("parent")).unwrap();
             fs::create_dir(root.path().join("outside")).unwrap();
             let target = root.path().join("parent/file");
@@ -271,7 +272,7 @@ async fn symlink_races_at_final_boundary_refuse_changed_paths_only() {
 
 #[test]
 fn ctrl_c_between_writes_retains_completed_file_and_cleans_staging() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",

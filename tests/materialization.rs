@@ -48,7 +48,7 @@ fn bytes(plan: &Plan, index: usize) -> Vec<u8> {
 
 #[tokio::test]
 async fn preflight_rejects_entire_configuration_before_any_fetch() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let dir = root.path();
     let marker = dir.join("fetched");
     private(&dir.join("custom.json"), b"{}");
@@ -103,7 +103,7 @@ async fn preflight_rejects_entire_configuration_before_any_fetch() {
 
 #[tokio::test]
 async fn literal_paths_private_staging_outcomes_snapshots_and_cleanup() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let dir = root.path().join("config");
     fs::create_dir(&dir).unwrap();
     let mut cfg = config(&dir);
@@ -209,7 +209,7 @@ async fn literal_paths_private_staging_outcomes_snapshots_and_cleanup() {
 #[tokio::test]
 async fn non_directory_ancestor_does_not_discard_independent_staging() {
     for good_first in [true, false] {
-        let root = tempfile::tempdir().unwrap();
+        let root = support::tempdir();
         let dir = root.path();
         private(&dir.join("parent"), b"not a directory");
         let mut cfg = config(dir);
@@ -254,7 +254,7 @@ async fn non_directory_ancestor_does_not_discard_independent_staging() {
 
 #[tokio::test]
 async fn nonregular_targets_metadata_bounds_and_empty_plan() {
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let dir = root.path();
     let empty = plan(&config(dir)).await.unwrap();
     assert!(empty.files.is_empty());
@@ -283,7 +283,7 @@ async fn nonregular_targets_metadata_bounds_and_empty_plan() {
 async fn controlled_provider_fixtures() {
     let _fixture = PROVIDER_FIXTURES.lock().await;
     let fake = FakeAgent::new().await;
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let dir = root.path();
     let bin = dir.join("bin");
     fs::create_dir(&bin).unwrap();
@@ -346,7 +346,7 @@ async fn controlled_provider_fixtures() {
 #[test]
 fn many_near_limit_files_use_private_disk_staging_with_bounded_memory() {
     let _fixture = PROVIDER_FIXTURES.blocking_lock();
-    let root = tempfile::tempdir().unwrap();
+    let root = support::tempdir();
     let mut command = assert_cmd::Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "large_batch_child", "--nocapture"])
