@@ -47,6 +47,107 @@ Original capture (historical context; decisions below supersede resolved uncerta
 - Q31 — Outcomes: report paths and written/unchanged/failed outcomes, never contents. Empty configuration/no changes succeeds; any error or declined confirmation fails. Ctrl+C cleans temporary files, retains completed writes, and exits unsuccessfully. JSON output, dry-run, and watch modes are excluded (confirmed).
 - Q32 — Paths and metadata: paths are literal, without home/environment expansion; reject empty paths and control characters. Replacements are private current-user files; preserving previous modes, ownership, ACLs, or extended attributes is excluded (confirmed).
 
+## Disposable POC learnings
+
+A separately authorized, throwaway POC modified the existing application to try
+all three interfaces: TUI, JSON configuration, and CLI. The user approved the
+final tab presentation and requested retaining these learnings while discarding
+the implementation. This is interface exploration, not completion of v1 or a
+relaxation of Q1–Q32.
+
+### Approved presentation refinements
+
+- Q33 — Visible dashboard navigation (confirmed through iteration): use the
+  actual Ratatui `Tabs` widget attached to the list's top border, following the
+  [Ratatui Tabs example](https://ratatui.rs/examples/widgets/tabs/). Show Entries
+  and Files together, with a clearly highlighted active tab. The accepted POC
+  used padded labels, a dot divider, and a contrasting filled active tab. Tab
+  retains Q22's switching behavior; the footer advertises it.
+- Plain `Entries / [Files]` text beside the logo was too easy to miss. Making
+  those same header labels bold, filled badges with a `Tab ⇄` hint was still
+  insufficient. Put navigation on the content panel, not beside the branding.
+- Q34 — Concise list label (confirmed): use `Files · 1`, not
+  `Files · psst write-files to materialize · 1`. In the accepted layout, the tabs
+  occupy the top border and the count/filter title occupies the bottom border.
+  Keep materialization guidance in contextual status/help, not the list title.
+
+### TUI flow exercised
+
+- Start on Entries; Tab switches to Files and preserves each view's filter and
+  selection. Switching invalidates revealed values and pending view results.
+- Files displays Destination, Source, Reference, and Contents columns, plus a
+  selectable `+ New file` row. Contents stay masked until requested.
+- Ctrl+N or the creation row opens the shared provider editor. Destination
+  replaces Environment name; source selection, Ctrl+B browsing, local-storage
+  authoring, and on-demand reveal/copy reuse existing controls. Source results,
+  not destination contents, are shown or copied.
+- Ctrl+S saves only the mapping. The status explains that `psst write-files`
+  materializes it. Deleting a file mapping retains both its destination and
+  provider contents; there is no ciphertext-removal toggle for that action.
+  Shared-reference warnings must include both views.
+- The prototype prefilled new files with destination `./config.local`, manual
+  source, and `REPLACE_ME` contents to speed exploration. These are POC shortcuts,
+  **not agreed production defaults**.
+
+### Configuration and CLI flow exercised
+
+The flat tagged representation worked with the existing configuration/editor
+flow. For example:
+
+```json
+{
+  "API_TOKEN": {"type": "env", "source": "manual", "value": "demo"},
+  "./config.local": {"type": "file", "source": "manual", "value": "REPLACE_ME"}
+}
+```
+
+- Untagged mappings load as environment entries; saving emits explicit tags.
+  Unknown tags and duplicate keys are rejected. Environment entry `TOKEN` and
+  file destination `./TOKEN` can coexist; a key collision across views is an
+  error rather than silently replacing the other mapping.
+- `psst write-files` resolves all managed files through real providers and writes
+  relative destinations beside the selected configuration, not the caller's
+  working directory. Provider resolution includes actual shell execution.
+- `psst write-files --yes` approves replacement of differing existing files.
+  Without it, an interactive run lists replacements and asks once
+  `Replace all? [y/N]`; a noninteractive replacement fails before any writes,
+  including new destinations. Declining also writes nothing.
+- Outcomes are path-based `written`, `unchanged`, and `failed`, without contents.
+  Empty file sets succeed with guidance to add one through Files. Resolution or
+  write failures produce an unsuccessful exit while allowing independent valid
+  writes after batch consent.
+- Managed files stay out of wrapped-command environments and `--write` dotenv
+  exports; ordinary command execution never materializes them.
+
+### Implementation lessons and verification limits
+
+- Existing provider fetching, editor/browser controls, configuration persistence,
+  and atomic file replacement were enough to demonstrate the interface without
+  another project or dependencies. The final tab presentation used the existing
+  Ratatui dependency's `Tabs`, not a custom widget.
+- To avoid restructuring the app, the POC swapped active/inactive entry maps in
+  configuration when switching tabs. This was a disposable shortcut, not an
+  architectural decision; a real implementation should keep environment entries
+  and managed files unambiguous independently of UI selection.
+- Planning retained all fetched contents in memory. It omitted the agreed private
+  staging, aggregate planning bounds, per-file size enforcement, path/alias and
+  symlink protections, protected-destination checks, destination conflict
+  rechecks, private parent-directory creation, and permission checks for unchanged
+  files. Existing atomic replacement was reused, but that does not establish the
+  full filesystem-safety or cancellation contract. Keep Q15 and Q20–Q32 intact.
+- Automated POC tests covered tab filter restoration, mapping save without
+  materialization, deletion retaining a destination, configuration-relative CLI
+  writes, unchanged results, noninteractive batch replacement refusal before new
+  writes, `--yes`, and separation from environment injection. Existing terminal
+  tests needed the intentional label update from `Secrets · 2` to `Entries · 2`.
+- Formatting, Clippy, and the full suite passed before the final visual
+  refinements; the final Tabs version passed all 64 UI unit tests and Clippy.
+  This is scoped POC evidence, not full managed-files acceptance, safety review,
+  or fresh end-to-end verification of every provider and cancellation path.
+- The POC source, tests, and temporary README instructions are discarded; this
+  idea retains the decisions. No spec, tickets, or production implementation are
+  implied by the experiment.
+
 ## Open questions and investigations
 
 - Q1–Q32 are settled or explicitly exclude their alternative branches. No open design questions or investigations remain; the user confirmed the shared understanding.
@@ -57,6 +158,6 @@ Original capture (historical context; decisions below supersede resolved uncerta
 
 ## Agreement
 
-The user explicitly confirmed the shared understanding and Q1–Q32 decisions. V1 adds independently configured managed files using existing provider results, explicit env/file tags in the flat configuration, separate interactive views, and an explicit all-files `write-files` command. Materialization uses private staging, batch replacement confirmation, safe atomic per-file writes, and best-effort outcomes. Relative paths resolve beside the defining configuration; outside paths are allowed subject to the recorded safety checks. Existing provider normalization remains; crash-leftover plaintext staging is an acknowledged limitation.
+The user explicitly confirmed the shared understanding and Q1–Q32 decisions, then approved the POC presentation refinements Q33–Q34. V1 adds independently configured managed files using existing provider results, explicit env/file tags in the flat configuration, separate interactive views, and an explicit all-files `write-files` command. Materialization uses private staging, batch replacement confirmation, safe atomic per-file writes, and best-effort outcomes. Relative paths resolve beside the defining configuration; outside paths are allowed subject to the recorded safety checks. Existing provider normalization remains; crash-leftover plaintext staging is an acknowledged limitation.
 
 Reverse updates, templating, binary attachments, automatic materialization, and automatic destination cleanup are excluded. This agreement authorizes neither specification generation nor implementation; each requires a separate request.
