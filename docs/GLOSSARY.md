@@ -13,10 +13,13 @@ A configuration item that associates an environment name with a provider and a s
 _Avoid_: Secret (when referring to the configuration item)
 
 **Provider**:
-A source of secrets that interprets an entry's stored value to obtain its secret, including manual values and shell commands.
+A source that interprets a stored value to resolve contents for a secret or managed file, including manual values and shell commands.
 
 **Reference**:
-A locator identifying a secret within a provider, such as a 1Password field or Terraform output. Manual literals and shell commands are stored values, not locators.
+A locator identifying content within a provider for a secret or managed file, such as a 1Password field or Terraform output. Manual literals and shell commands are stored values, not locators.
+
+**Managed file**:
+A configuration item associating a source and stored value with a filesystem destination for the resolved contents, independently of an environment-variable entry.
 
 **Environment name**:
 The name of the environment variable associated with an entry and used when injecting its secret.
@@ -25,4 +28,4 @@ The name of the environment variable associated with an entry and used when inje
 An identifier for an encrypted secret in local storage, independent of its environment name. Together with the public key, it identifies a stored record; the same ID can identify different secrets under different keys.
 
 **Configuration**:
-The collection of entries defining which secrets psst manages and their associated environment names.
+The collection of entries and managed files defining which secrets and files psst manages, with their associated environment names or filesystem destinations.
