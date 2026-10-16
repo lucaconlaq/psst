@@ -1,5 +1,5 @@
 use super::app::{App, View};
-use crate::{browser::Target, providers};
+use crate::{browser::Target, config::MappingKind, providers};
 use ratatui::{prelude::*, widgets::*};
 
 pub(super) const ACCENT: Color = Color::Rgb(110, 210, 195);
@@ -41,25 +41,33 @@ pub(super) fn clean(s: &str) -> String {
 fn help_lines(width: usize) -> Vec<Line<'static>> {
     let sections: &[(&str, &[(&str, &str)])] = &[
         (
-            "MANAGE ENTRIES",
+            "MANAGE ENTRIES AND FILES",
             &[
-                ("Up/Down", "Select an entry"),
-                ("Enter", "Edit selected entry"),
-                ("Ctrl+N", "Add an entry"),
-                ("Type", "Filter by environment name"),
+                (
+                    "Tab",
+                    "Switch Entries / Files; keep each filter and selection",
+                ),
+                ("Up/Down", "Select a mapping"),
+                ("Enter", "Edit mapping, or create on the + New row"),
+                ("Ctrl+N", "Add an entry or file mapping"),
+                ("Type", "Filter by environment name or destination"),
                 ("Backspace", "Erase filter"),
                 ("Ctrl+R", "Reveal or hide resolved secret (30 seconds)"),
                 ("Ctrl+Y", "Copy secret to clipboard"),
-                ("Ctrl+D", "Confirm entry deletion"),
+                ("Ctrl+D", "Confirm mapping deletion"),
                 ("Esc", "Quit from the dashboard, even while filtered"),
             ],
         ),
         (
-            "EDIT AN ENTRY",
+            "EDIT A MAPPING",
             &[
                 ("Tab / Shift+Tab", "Move between fields"),
                 ("Left/Right", "Choose source or move text cursor"),
-                ("Ctrl+S", "Save changes"),
+                (
+                    "Ctrl+S",
+                    "Save mapping only; files need psst --write-files separately",
+                ),
+                ("", "File deletion keeps destination and provider contents."),
                 ("Esc", "Discard changes"),
                 (
                     "Ctrl+R",
@@ -109,7 +117,7 @@ fn help_lines(width: usize) -> Vec<Line<'static>> {
             &[
                 (
                     "Tab",
-                    "Toggle optional ciphertext removal for mapping deletion",
+                    "Toggle optional ciphertext removal for entry deletion only",
                 ),
                 ("Enter / Esc", "Confirm or cancel deletion"),
                 ("F1", "Open help from any view"),
@@ -124,7 +132,47 @@ fn help_lines(width: usize) -> Vec<Line<'static>> {
                     "Run command with resolved secrets",
                 ),
                 ("psst --copy NAME", "Copy one secret"),
-                ("psst --write", "Export to a private .env file"),
+                (
+                    "psst --write",
+                    "Export environment entries only to private .env",
+                ),
+                (
+                    "psst --write-files [--yes]",
+                    "Explicitly materialize all file mappings",
+                ),
+                (
+                    "",
+                    "One batch replacement prompt precedes all destination writes.",
+                ),
+                (
+                    "",
+                    "Refusal cancels; --yes approves replacements, not unsafe paths.",
+                ),
+                (
+                    "",
+                    "written / unchanged / failed; errors exit unsuccessfully.",
+                ),
+                (
+                    "",
+                    "Identical files need 0600; wrong modes fail without repair.",
+                ),
+                (
+                    "",
+                    "Independent writes have no rollback; Ctrl+C keeps completed writes.",
+                ),
+                ("", "Destinations and staging are plaintext, not a sandbox."),
+                (
+                    "",
+                    "Crashes may leave system-temp psst-files-*; inspect/remove manually.",
+                ),
+                (
+                    "",
+                    "Trusted shell providers can have side effects before consent.",
+                ),
+                (
+                    "",
+                    "See README.md for filesystem and local-storage release limits.",
+                ),
                 ("", "Manual values and .env files are plaintext."),
                 ("", "The clipboard is not automatically cleared."),
                 ("", "Draft values stay masked until explicitly revealed."),
@@ -190,7 +238,10 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.browser_delete.is_some() {
         &[("Enter", "delete"), ("Esc", "cancel")]
     } else if let Some(name) = &app.delete {
-        if providers::get(&app.config.entries[name].source).is_some_and(|p| p.author().is_some()) {
+        if app.config.entries[name].kind == MappingKind::Env
+            && providers::get(&app.config.entries[name].source)
+                .is_some_and(|p| p.author().is_some())
+        {
             &[
                 ("Enter", "delete"),
                 ("Esc", "cancel"),
@@ -204,6 +255,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         match &app.view {
             View::Main => &[
+                ("Tab", "Entries/Files"),
                 ("Type", "filter"),
                 ("↑↓", "select"),
                 ("Enter", "edit"),
@@ -267,8 +319,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     let hint_height = hints.len() as u16;
     let help = matches!(app.view, View::Help);
     let compact_creator = matches!(app.view, View::Create(_)) && area.height < 24;
+    let compact_editor = matches!(app.view, View::Editor(_)) && area.height < 24;
     let compact_list = matches!(app.view, View::Main | View::Browser { .. }) && area.height < 20;
-    let compact = compact_creator || compact_list;
+    let compact = compact_creator || compact_editor || compact_list;
     let chunks = Layout::vertical([
         Constraint::Length(if compact || help { 1 } else { 3 }),
         Constraint::Min(if compact_creator { 4 } else { 3 }),
@@ -296,14 +349,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     );
     match &mut app.view {
         View::Main => {
-            let query = app.query.to_lowercase();
-            let names = app
-                .config
-                .entries
-                .keys()
-                .filter(|n| n.to_lowercase().contains(&query))
-                .cloned()
-                .collect::<Vec<_>>();
+            let file = app.kind == MappingKind::File;
+            let label = if file { "Files" } else { "Entries" };
+            let names = app.names();
             app.selected = app.selected.min(names.len());
             app.table.select(Some(app.selected));
             let rows = names
@@ -334,17 +382,20 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
                     .height(1)
                 })
                 .chain(std::iter::once(Row::new(vec![
-                    Cell::from("+ New entry").style(Style::default().fg(ACCENT).bold()),
+                    Cell::from(if file { "+ New file" } else { "+ New entry" })
+                        .style(Style::default().fg(ACCENT).bold()),
                     Cell::from(""),
                     Cell::from(""),
                     Cell::from(""),
                 ])));
-            let title = if app.query.is_empty() && names.is_empty() {
-                " No secrets yet ".to_owned()
-            } else if app.query.is_empty() {
-                format!(" Secrets · {} ", names.len())
+            let title = if app.query.is_empty() {
+                format!(" {label} · {} ", names.len())
             } else {
-                format!(" Filter: {} · {} matches ", clean(&app.query), names.len())
+                format!(
+                    " {label} · {} · Filter: {} ",
+                    names.len(),
+                    clean(&app.query)
+                )
             };
             let widths = if area.width >= 100 {
                 vec![
@@ -367,12 +418,16 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
                     // too little room for both column headings and data.
                     Row::default().height(0)
                 } else {
-                    Row::new(["NAME", "SOURCE", "REFERENCE", "SECRET"])
-                        .style(Style::default().fg(MUTED))
-                        .bottom_margin(u16::from(!compact_list))
+                    Row::new(if file {
+                        ["DESTINATION", "SOURCE", "REFERENCE", "CONTENTS"]
+                    } else {
+                        ["NAME", "SOURCE", "REFERENCE", "SECRET"]
+                    })
+                    .style(Style::default().fg(MUTED))
+                    .bottom_margin(u16::from(!compact_list))
                 })
                 .column_spacing(1)
-                .block(block(title))
+                .block(block("").title_bottom(Line::from(title).fg(ACCENT)))
                 .row_highlight_style(Style::default().bg(PANEL).fg(ACCENT))
                 .highlight_symbol("› ");
             let content = Layout::vertical([
@@ -381,11 +436,34 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             ])
             .split(chunks[1]);
             frame.render_widget(
-                Paragraph::new(format!("Type to filter: {}", clean(&app.query)))
-                    .style(Style::default().fg(ACCENT)),
+                Paragraph::new(if names.is_empty() && app.query.is_empty() {
+                    if file {
+                        "Type to filter: · No files yet".into()
+                    } else {
+                        "Type to filter: · No secrets yet".into()
+                    }
+                } else {
+                    format!("Type to filter: {}", clean(&app.query))
+                })
+                .style(Style::default().fg(ACCENT)),
                 content[0],
             );
             frame.render_stateful_widget(table, content[1], &mut app.table);
+            // Overlay actual Tabs on the table's top border, not beside branding.
+            frame.render_widget(
+                Tabs::new([" Entries ", " Files "])
+                    .select(usize::from(file))
+                    .padding("", "")
+                    .divider(" · ")
+                    .style(Style::default().fg(MUTED).bg(BG))
+                    .highlight_style(Style::default().fg(BG).bg(ACCENT).bold()),
+                Rect::new(
+                    content[1].x + 2,
+                    content[1].y,
+                    content[1].width.saturating_sub(4).min(23),
+                    u16::from(content[1].height > 0),
+                ),
+            );
         }
         View::Create(c) => {
             let inner = block(" Create encrypted value ");
@@ -411,7 +489,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
                 .to_vec()
             };
             for (i, label) in [
-                "Environment name",
+                c.editor.name_label(),
                 "Local storage ID",
                 if c.editor.show {
                     "Exact UTF-8 value · revealed"
@@ -480,28 +558,47 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
         View::Editor(e) => {
-            let inner = block(if e.original.is_some() {
-                " Edit secret "
-            } else {
-                " Add secret "
+            let inner = block(match (e.kind, e.original.is_some()) {
+                (MappingKind::File, true) => " Edit file mapping ",
+                (MappingKind::File, false) => " Add file mapping ",
+                (_, true) => " Edit secret ",
+                (_, false) => " Add secret ",
             });
-            let body = inner.inner(chunks[1]);
-            frame.render_widget(inner, chunks[1]);
-            let fields = Layout::vertical([
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Min(1),
-            ])
-            .split(body);
+            let body = if compact_editor {
+                chunks[1]
+            } else {
+                let body = inner.inner(chunks[1]);
+                frame.render_widget(inner, chunks[1]);
+                body
+            };
+            let fields = if compact_editor {
+                let compact_fields =
+                    Layout::vertical([Constraint::Length(3), Constraint::Min(3)]).split(body);
+                let mut fields = vec![Rect::default(); 4];
+                fields[e.field] = compact_fields[0];
+                fields[3] = compact_fields[1];
+                fields
+            } else {
+                Layout::vertical([
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                ])
+                .split(body)
+                .to_vec()
+            };
             let provider = providers::get(&e.source);
             let ref_label = provider
                 .map(|provider| provider.reference_label())
                 .unwrap_or("Reference (unknown provider)");
-            for (i, label) in ["Environment name", "Source · ← / → to choose", ref_label]
+            for (i, label) in [e.name_label(), "Source · ← / → to choose", ref_label]
                 .into_iter()
                 .enumerate()
             {
+                if compact_editor && e.field != i {
+                    continue;
+                }
                 let text = match i {
                     0 => e.name.clone(),
                     1 => clean(&e.source),
@@ -762,8 +859,12 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             shown_name.push('…');
         }
         let entry = &app.config.entries[name];
-        let author = providers::get(&entry.source).and_then(|p| p.author());
-        let options = if let Some(author) = author {
+        let author = (entry.kind == MappingKind::Env)
+            .then(|| providers::get(&entry.source).and_then(|p| p.author()))
+            .flatten();
+        let options = if entry.kind == MappingKind::File {
+            "\nDestination and provider contents kept.".to_owned()
+        } else if let Some(author) = author {
             let shared = app.config.entries.iter().any(|(other, value)| {
                 other != name
                     && value.source == entry.source
@@ -914,6 +1015,7 @@ mod tests {
                 None,
                 "DRAFT".into(),
                 Entry {
+                    kind: crate::config::MappingKind::Env,
                     source: "local-storage".into(),
                     value: String::new(),
                 },

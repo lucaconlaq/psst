@@ -17,6 +17,365 @@ fn app() -> App {
     let t = tempfile::tempdir().unwrap().keep().canonicalize().unwrap();
     App::new(Config::load(t.join(".psst.json")).unwrap())
 }
+#[test]
+fn entry_edits_rename_and_deletion_keep_hidden_file_mappings() {
+    use crate::config::MappingKind;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("psst.json");
+    let destination = dir.path().join("TOKEN");
+    std::fs::write(&destination, "destination stays").unwrap();
+    let provider = dir.path().join("provider-record");
+    std::fs::write(&provider, "provider stays").unwrap();
+    std::fs::write(&path, r#"{"TOKEN":{"source":"unknown","value":"old reference"},"./TOKEN":{"type":"file","source":"unknown","value":"provider-record"},"COLLISION":{"type":"file","source":"shell","value":"touch fetched"}}"#).unwrap();
+    let mut app = App::new(Config::load(path.clone()).unwrap());
+    let files = app
+        .config
+        .entries
+        .iter()
+        .filter(|(_, entry)| entry.kind == MappingKind::File)
+        .map(|(key, entry)| (key.clone(), entry.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(app.names(), ["TOKEN"]);
+    let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(!rendered.contains("COLLISION"));
+    assert!(!rendered.contains("./TOKEN"));
+    key(&mut app, KeyCode::Enter);
+    let View::Editor(editor) = &mut app.view else {
+        panic!("expected editor")
+    };
+    assert_eq!(editor.source, "unknown");
+    editor.value = Zeroizing::new("edited reference".into());
+    app.save();
+    assert_eq!(app.config.entries["TOKEN"].value, "edited reference");
+    key(&mut app, KeyCode::Enter);
+    let View::Editor(editor) = &mut app.view else {
+        panic!("expected editor")
+    };
+    editor.name = "COLLISION".into();
+    app.save();
+    assert!(app.error);
+    assert!(app.config.entries["COLLISION"].kind == MappingKind::File);
+    let View::Editor(editor) = &mut app.view else {
+        panic!("expected editor")
+    };
+    editor.name = "RENAMED".into();
+    app.save();
+    assert!(!app.config.entries.contains_key("TOKEN"));
+    assert_eq!(app.names(), ["RENAMED"]);
+    ctrl(&mut app, 'd');
+    key(&mut app, KeyCode::Enter);
+    assert!(app.names().is_empty());
+    let loaded = Config::load(path).unwrap();
+    assert_eq!(loaded.entries.len(), files.len());
+    for (name, mapping) in files {
+        assert!(loaded.entries[&name] == mapping);
+    }
+    assert_eq!(
+        std::fs::read_to_string(destination).unwrap(),
+        "destination stays"
+    );
+    assert_eq!(std::fs::read_to_string(provider).unwrap(), "provider stays");
+    assert!(!dir.path().join("fetched").exists());
+}
+
+#[test]
+fn files_navigation_parks_only_filter_selection_and_scroll() {
+    let mut app = app();
+    for (name, kind) in [
+        ("TOKEN", crate::config::MappingKind::Env),
+        ("./TOKEN", crate::config::MappingKind::File),
+    ] {
+        app.config.entries.insert(
+            name.into(),
+            Entry {
+                kind,
+                source: "manual".into(),
+                value: "hidden".into(),
+            },
+        );
+    }
+    key(&mut app, KeyCode::Char('T'));
+    key(&mut app, KeyCode::End);
+    assert_eq!(app.selected, 1);
+    app.revealed.insert(
+        "TOKEN".into(),
+        (Zeroizing::new("visible".into()), Instant::now()),
+    );
+    let generation = app.generation;
+    key(&mut app, KeyCode::Tab);
+    assert!(app.revealed.is_empty());
+    assert!(app.generation > generation);
+    assert_eq!(app.names(), ["./TOKEN"]);
+    assert_eq!(app.selected, 0);
+    key(&mut app, KeyCode::Char('/'));
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.query, "T");
+    assert_eq!(app.selected, 1);
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.query, "/");
+    assert_eq!(app.selected, 0);
+    app.message(Message::Reveal {
+        generation,
+        name: "TOKEN".into(),
+        result: Ok(Zeroizing::new("late".into())),
+    });
+    assert!(app.revealed.is_empty());
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Tab);
+    assert!(
+        matches!(&app.view, View::Editor(e) if e.field == 1 && e.kind == crate::config::MappingKind::File)
+    );
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::F(1));
+    assert!(matches!(app.view, View::Help));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.query, "/");
+    assert!(matches!(app.view, View::Main));
+}
+
+#[test]
+fn file_mapping_crud_is_configuration_only_and_rejects_cross_kind_collisions() {
+    use crate::config::MappingKind;
+    let mut app = app();
+    let destination = app.config.dir().join("TOKEN");
+    std::fs::write(&destination, "destination unchanged").unwrap();
+    app.config.entries.insert(
+        "TOKEN".into(),
+        Entry {
+            kind: MappingKind::Env,
+            source: "manual".into(),
+            value: "environment unchanged".into(),
+        },
+    );
+    app.config.save(app.config.entries.clone()).unwrap();
+    key(&mut app, KeyCode::Tab);
+    ctrl(&mut app, 'n');
+    assert!(
+        matches!(&app.view, View::Editor(e) if e.name.is_empty() && e.value.is_empty() && e.name_label() == "Destination")
+    );
+    app.save();
+    assert!(app.error);
+    app.error_panel = false;
+    if let View::Editor(e) = &mut app.view {
+        e.name = "TOKEN".into();
+    }
+    app.save();
+    assert!(app.status.contains("already exists"));
+    app.error_panel = false;
+    if let View::Editor(e) = &mut app.view {
+        e.name = "./TOKEN".into();
+        e.source = "local-storage".into();
+        e.value = Zeroizing::new("record#SHA256:test".into());
+    }
+    app.save();
+    assert!(app.status.contains("psst --write-files"));
+    key(&mut app, KeyCode::Enter);
+    if let View::Editor(e) = &mut app.view {
+        e.name = "renamed".into();
+    }
+    app.save();
+    assert!(!app.config.entries.contains_key("./TOKEN"));
+    assert!(app.config.entries["renamed"].kind == MappingKind::File);
+    ctrl(&mut app, 'd');
+    let text = screen(&mut app);
+    assert!(text.contains("Destination and provider contents kept"));
+    assert!(!text.contains("Remove ciphertext"));
+    key(&mut app, KeyCode::Tab);
+    assert!(!app.delete_remove);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.config.entries.contains_key("renamed"));
+    ctrl(&mut app, 'd');
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.config.entries.len(), 1);
+    assert_eq!(app.config.entries["TOKEN"].value, "environment unchanged");
+    assert_eq!(
+        std::fs::read_to_string(destination).unwrap(),
+        "destination unchanged"
+    );
+    let loaded = Config::load(app.config.path.clone()).unwrap();
+    assert!(loaded.entries == app.config.entries);
+}
+
+#[test]
+fn file_save_conflict_preserves_draft_and_other_kind() {
+    let mut app = app();
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    if let View::Editor(e) = &mut app.view {
+        e.name = "file".into();
+    }
+    std::fs::write(
+        &app.config.path,
+        r#"{"TOKEN":{"source":"manual","value":"other writer"}}"#,
+    )
+    .unwrap();
+    app.save();
+    assert!(app.error);
+    assert!(app.config.entries.is_empty());
+    assert!(matches!(&app.view, View::Editor(e) if e.name == "file"));
+    assert_eq!(
+        Config::load(app.config.path.clone()).unwrap().entries["TOKEN"].value,
+        "other writer"
+    );
+}
+
+#[test]
+fn file_tabs_are_attached_filled_and_small_layouts_keep_focused_controls() {
+    for (width, height) in [(45, 12), (60, 18), (80, 24), (120, 30)] {
+        let mut app = app();
+        key(&mut app, KeyCode::Tab);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let lines = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let tab_y = lines
+            .iter()
+            .position(|line| line.contains("Entries  ·  Files"))
+            .expect("attached tabs");
+        assert!(lines[tab_y].contains('╭'));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Files · 0") && line.contains('╰'))
+        );
+        assert!(lines.iter().any(|line| line.contains("+ New file")));
+        assert!(lines.iter().any(|line| line.contains("Entries/Files")));
+        let file_x = lines[tab_y].chars().position(|c| c == 'F').unwrap() as u16;
+        assert_eq!(buffer[(file_x, tab_y as u16)].bg, ACCENT);
+        key(&mut app, KeyCode::Enter);
+        for field in 0..3 {
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                text.contains(["Destination", "Source", "Literal value"][field]),
+                "{width}×{height}: {text}"
+            );
+            key(&mut app, KeyCode::Tab);
+        }
+        key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.view, View::Main));
+        assert!(app.config.entries.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn compact_editors_show_revealed_contents_and_keep_fields_accessible() {
+    use crate::config::MappingKind;
+
+    for (width, height) in [(45, 12), (60, 18), (80, 23)] {
+        for kind in [MappingKind::Env, MappingKind::File] {
+            for source in ["shell", "manual"] {
+                let mut app = app();
+                app.view = View::Editor(Editor::new(
+                    None,
+                    "KEY".into(),
+                    Entry {
+                        kind,
+                        source: source.into(),
+                        value: if source == "shell" {
+                            "printf COMPACT_PREVIEW".into()
+                        } else {
+                            "COMPACT_PREVIEW".into()
+                        },
+                    },
+                ));
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let (tx, mut rx) = mpsc::unbounded_channel();
+                let mut tasks = Tasks(vec![]);
+                let toggle = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+                app.key(toggle, &tx, &mut tasks);
+                if source == "shell" {
+                    let message = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    app.message(message);
+                }
+                for field in 0..3 {
+                    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let lines = (0..height)
+                        .map(|y| {
+                            (0..width)
+                                .map(|x| buffer[(x, y)].symbol())
+                                .collect::<String>()
+                        })
+                        .collect::<Vec<_>>();
+                    let preview_y = lines
+                        .iter()
+                        .position(|line| line.contains("Revealed value"))
+                        .expect("visible preview panel");
+                    assert!(
+                        lines[preview_y + 1].contains("COMPACT_PREVIEW"),
+                        "{source} at {width}×{height}: {lines:?}"
+                    );
+                    let label = match field {
+                        0 if kind == MappingKind::File => "Destination",
+                        0 => "Environment name",
+                        1 => "Source",
+                        _ if source == "manual" => "Literal value",
+                        _ => "Shell command",
+                    };
+                    assert!(lines[..preview_y].iter().any(|line| line.contains(label)));
+                    key(&mut app, KeyCode::Tab);
+                }
+                app.key(toggle, &tx, &mut tasks);
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(!text.contains("COMPACT_PREVIEW"));
+                key(&mut app, KeyCode::Char('X'));
+                assert!(matches!(&app.view, View::Editor(e) if e.name == "KEYX"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn switching_dashboard_aborts_pending_reveal_tasks() {
+    let mut app = app();
+    let (tx, _) = mpsc::unbounded_channel();
+    let mut tasks = Tasks(vec![]);
+    let task = tokio::spawn(std::future::pending::<()>());
+    let abort = task.abort_handle();
+    tasks.push(app.generation, task);
+    app.loading.insert("pending".into());
+    app.key(
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        &tx,
+        &mut tasks,
+    );
+    tokio::task::yield_now().await;
+    assert!(abort.is_finished());
+    assert!(app.loading.is_empty());
+    assert!(tasks.0.is_empty());
+}
+
 fn ctrl(app: &mut App, character: char) {
     let (tx, _) = mpsc::unbounded_channel();
     app.key(
@@ -63,6 +422,7 @@ fn deletion_fixture() -> (App, std::path::PathBuf, Box<dyn providers::PreparedDe
     let id = document.records[0].id.clone();
     assert_eq!(id, "fixture");
     let entry = Entry {
+        kind: crate::config::MappingKind::Env,
         source: "local-storage".into(),
         value: id,
     };
@@ -87,6 +447,7 @@ fn browser_deletion_fixture() -> (App, std::path::PathBuf) {
             None,
             "UNSAVED".into(),
             Entry {
+                kind: crate::config::MappingKind::Env,
                 source: "local-storage".into(),
                 value: "previous".into(),
             },
@@ -113,6 +474,12 @@ fn browser_deletion_fixture() -> (App, std::path::PathBuf) {
 #[test]
 fn browser_deletion_cancel_confirm_and_shared_warning_keep_configuration_and_draft() {
     let (mut app, path) = browser_deletion_fixture();
+    // Mix mapping kinds without changing reference counts or storage identity.
+    app.config.entries.values_mut().next().unwrap().kind = crate::config::MappingKind::File;
+    app.kind = crate::config::MappingKind::File;
+    if let View::Browser { editor, .. } = &mut app.view {
+        editor.kind = app.kind;
+    }
     let config = std::fs::read(&app.config.path).unwrap();
     let ciphertext = std::fs::read(&path).unwrap();
     if let View::Browser { browser, .. } = &mut app.view {
@@ -710,6 +1077,7 @@ fn renders_sizes_and_masking() {
     app.config.entries.insert(
         "API_KEY".into(),
         Entry {
+            kind: crate::config::MappingKind::Env,
             source: "manual".into(),
             value: "NEVER_RENDER_THIS".into(),
         },
@@ -738,6 +1106,7 @@ fn legacy_app() -> App {
         app.config.entries.insert(
             name.into(),
             Entry {
+                kind: crate::config::MappingKind::Env,
                 source: "manual".into(),
                 value: value.into(),
             },
@@ -987,14 +1356,23 @@ fn help_scrolls_with_arrows_and_keeps_shortcuts_visible() {
         assert!(app.help_scroll > 0);
         for section in [
             "MANAGE ENTRIES",
-            "EDIT AN ENTRY",
+            "EDIT A MAPPING",
             "CREATE OR UPDATE ENCRYPTED VALUES",
             "BROWSE REFERENCES",
             "COMMAND LINE AND SAFETY",
         ] {
             assert!(seen.contains(section), "missing {section}");
         }
-        assert!(seen.contains("Ctrl+C quits from any view."));
+        for guidance in [
+            "Ctrl+C quits from any view.",
+            "--write-files",
+            "0600;",
+            "repair.",
+            "psst-files-*",
+            "consent.",
+        ] {
+            assert!(seen.contains(guidance), "missing {guidance}");
+        }
         let bottom = app.help_scroll;
         key(&mut app, KeyCode::Up);
         assert_eq!(app.help_scroll, bottom - 1);
@@ -1022,7 +1400,7 @@ fn help_scrolls_with_arrows_and_keeps_shortcuts_visible() {
                 (2..118)
                     .map(|x| buffer[(x, *y)].symbol())
                     .collect::<String>()
-                    .contains("Manual values and .env files are plaintext.")
+                    .contains("One batch replacement prompt precedes all destination writes.")
             })
             .unwrap();
         assert!((2..118).all(|x| buffer[(x, notes_row - 1)].symbol().trim().is_empty()));
@@ -1051,6 +1429,7 @@ fn legacy_all_names_safe_references_and_fixed_length_manual_masks() {
     app.config.entries.insert(
         "OP".into(),
         Entry {
+            kind: crate::config::MappingKind::Env,
             source: "op".into(),
             value: "op://vault/item/field".into(),
         },
@@ -1058,6 +1437,7 @@ fn legacy_all_names_safe_references_and_fixed_length_manual_masks() {
     app.config.entries.insert(
         "SHELL".into(),
         Entry {
+            kind: crate::config::MappingKind::Env,
             source: "shell".into(),
             value: "echo 1".into(),
         },
@@ -1073,6 +1453,7 @@ fn legacy_manual_shell_and_op_have_usable_editors() {
         app.config.entries.insert(
             "KEY".into(),
             Entry {
+                kind: crate::config::MappingKind::Env,
                 source: source.into(),
                 value: "original".into(),
             },
@@ -1100,6 +1481,7 @@ fn editor_reveals_expire_in_editor_and_browser() {
             None,
             "KEY".into(),
             Entry {
+                kind: crate::config::MappingKind::Env,
                 source: "manual".into(),
                 value: "literal".into(),
             },
@@ -1161,6 +1543,7 @@ fn vault_editor_label_identifies_the_provider() {
         None,
         "KEY".into(),
         Entry {
+            kind: crate::config::MappingKind::Env,
             source: "vault".into(),
             value: "/secret/project#password".into(),
         },
@@ -1191,6 +1574,7 @@ fn footer_renders_key_badges_in_each_view() {
                     None,
                     "KEY".into(),
                     Entry {
+                        kind: crate::config::MappingKind::Env,
                         source: "manual".into(),
                         value: String::new(),
                     },
@@ -1200,6 +1584,7 @@ fn footer_renders_key_badges_in_each_view() {
                         None,
                         "KEY".into(),
                         Entry {
+                            kind: crate::config::MappingKind::Env,
                             source: "op".into(),
                             value: String::new(),
                         },
@@ -1241,6 +1626,7 @@ fn creator(app: &mut App) {
             None,
             "KEY".into(),
             Entry {
+                kind: app.kind,
                 source: "local-storage".into(),
                 value: "id".into(),
             },
@@ -1464,99 +1850,117 @@ async fn encrypted_creation_faults_report_actual_surviving_files() {
         WriteBoundary::Replace,
         WriteBoundary::DirectorySync,
     ];
-    for existing in [false, true] {
-        for stage in 0..2 {
-            for failure in boundaries {
-                let mut app = app();
-                creator(&mut app);
-                let storage = app.config.dir().join("ciphertext");
-                if existing {
-                    std::fs::write(&storage, b"old ciphertext").unwrap();
-                }
-                if let View::Create(c) = &mut app.view {
-                    c.pending = Some(Box::new(TestSave {
-                        path: storage.clone(),
-                        failure: (stage == 0).then_some(failure),
-                        replacing: existing,
-                    }));
-                }
-                let (tx, mut rx) = mpsc::unbounded_channel();
-                let mut tasks = Tasks(vec![]);
-                app.save_creation(&tx, &mut tasks);
-                let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
-                // Configuration is never written by the storage task.
-                assert!(!app.config.path.exists());
-                app.message_checked(message, |boundary| {
-                    anyhow::ensure!(stage != 1 || boundary != failure, "Injected config failure");
-                    Ok(())
-                });
-                let storage_changed = stage == 1 || failure == WriteBoundary::DirectorySync;
-                let config_changed = stage == 1 && failure == WriteBoundary::DirectorySync;
-                assert_eq!(app.config.path.exists(), config_changed);
-                assert_eq!(app.config.entries.contains_key("KEY"), config_changed);
-                assert_eq!(
-                    std::fs::read(&storage).ok(),
-                    if storage_changed {
-                        Some(b"complete ciphertext".to_vec())
-                    } else if existing {
-                        Some(b"old ciphertext".to_vec())
-                    } else {
-                        None
+    for kind in [
+        crate::config::MappingKind::Env,
+        crate::config::MappingKind::File,
+    ] {
+        for existing in [false, true] {
+            for stage in 0..2 {
+                for failure in boundaries {
+                    let mut app = app();
+                    app.kind = kind;
+                    creator(&mut app);
+                    let storage = app.config.dir().join("ciphertext");
+                    if existing {
+                        std::fs::write(&storage, b"old ciphertext").unwrap();
                     }
-                );
-                assert!(app.error);
-                if stage == 0 {
-                    assert!(app.status.contains(if storage_changed {
-                        "Ciphertext replaced but durability uncertain"
+                    if let View::Create(c) = &mut app.view {
+                        c.pending = Some(Box::new(TestSave {
+                            path: storage.clone(),
+                            failure: (stage == 0).then_some(failure),
+                            replacing: existing,
+                        }));
+                    }
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+                    let mut tasks = Tasks(vec![]);
+                    app.save_creation(&tx, &mut tasks);
+                    let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    // Configuration is never written by the storage task.
+                    assert!(!app.config.path.exists());
+                    app.message_checked(message, |boundary| {
+                        anyhow::ensure!(
+                            stage != 1 || boundary != failure,
+                            "Injected config failure"
+                        );
+                        Ok(())
+                    });
+                    let storage_changed = stage == 1 || failure == WriteBoundary::DirectorySync;
+                    let config_changed = stage == 1 && failure == WriteBoundary::DirectorySync;
+                    assert_eq!(app.config.path.exists(), config_changed);
+                    assert_eq!(app.config.entries.contains_key("KEY"), config_changed);
+                    assert_eq!(
+                        std::fs::read(&storage).ok(),
+                        if storage_changed {
+                            Some(b"complete ciphertext".to_vec())
+                        } else if existing {
+                            Some(b"old ciphertext".to_vec())
+                        } else {
+                            None
+                        }
+                    );
+                    assert!(app.error);
+                    if stage == 0 {
+                        assert!(app.status.contains(if storage_changed {
+                            "Ciphertext replaced but durability uncertain"
+                        } else {
+                            "Ciphertext unchanged"
+                        }));
                     } else {
-                        "Ciphertext unchanged"
-                    }));
-                } else {
-                    assert!(app.status.contains(if config_changed {
-                        "Ciphertext and configuration replaced"
-                    } else {
-                        "Ciphertext saved; configuration unchanged"
-                    }));
+                        assert!(app.status.contains(if config_changed {
+                            "Ciphertext and configuration replaced"
+                        } else {
+                            "Ciphertext saved; configuration unchanged"
+                        }));
+                    }
+                    assert_narrow_failure_readable(&mut app);
+                    // Failure leaves a usable UI, with truthful loaded state.
+                    key(&mut app, KeyCode::Esc);
+                    ctrl(&mut app, 'n');
+                    assert!(matches!(app.view, View::Editor(_)));
                 }
-                assert_narrow_failure_readable(&mut app);
-                // Failure leaves a usable UI, with truthful loaded state.
-                key(&mut app, KeyCode::Esc);
-                ctrl(&mut app, 'n');
-                assert!(matches!(app.view, View::Editor(_)));
             }
         }
     }
 }
 #[tokio::test]
 async fn encrypted_cancelled_save_reports_completed_storage_without_touching_new_draft() {
-    let mut app = app();
-    creator(&mut app);
-    let storage = app.config.dir().join("ciphertext");
-    if let View::Create(c) = &mut app.view {
-        c.pending = Some(Box::new(TestSave {
-            path: storage.clone(),
-            failure: None,
-            replacing: false,
-        }));
+    for kind in [
+        crate::config::MappingKind::Env,
+        crate::config::MappingKind::File,
+    ] {
+        let mut app = app();
+        app.kind = kind;
+        creator(&mut app);
+        let storage = app.config.dir().join("ciphertext");
+        if let View::Create(c) = &mut app.view {
+            c.pending = Some(Box::new(TestSave {
+                path: storage.clone(),
+                failure: None,
+                replacing: false,
+            }));
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tasks = Tasks(vec![]);
+        app.save_creation(&tx, &mut tasks);
+        let message = rx.recv().await.unwrap();
+        key(&mut app, KeyCode::Esc);
+        // Switch dashboards and open a different kind before the completed
+        // write arrives.
+        key(&mut app, KeyCode::Tab);
+        creator(&mut app);
+        app.paste("NEW_DRAFT".into());
+        app.message(message);
+        assert!(storage.exists());
+        assert!(!app.config.path.exists());
+        assert!(
+            app.status
+                .contains("ciphertext was saved; configuration unchanged")
+        );
+        assert!(matches!(&app.view, View::Create(c) if c.secret.as_str() == "NEW_DRAFT"));
     }
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut tasks = Tasks(vec![]);
-    app.save_creation(&tx, &mut tasks);
-    let message = rx.recv().await.unwrap();
-    key(&mut app, KeyCode::Esc);
-    creator(&mut app);
-    app.paste("NEW_DRAFT".into());
-    app.message(message);
-    assert!(storage.exists());
-    assert!(!app.config.path.exists());
-    assert!(
-        app.status
-            .contains("ciphertext was saved; configuration unchanged")
-    );
-    assert!(matches!(&app.view, View::Create(c) if c.secret.as_str() == "NEW_DRAFT"));
 }
 #[test]
 fn replacement_can_be_declined_without_writes() {
@@ -1574,6 +1978,11 @@ fn replacement_can_be_declined_without_writes() {
         app.config.entries.insert(
             format!("LONG_ENVIRONMENT_REFERENCE_NAME_{index}"),
             Entry {
+                kind: if index % 2 == 0 {
+                    crate::config::MappingKind::Env
+                } else {
+                    crate::config::MappingKind::File
+                },
                 source: "local-storage".into(),
                 value: "id".into(),
             },
@@ -1585,7 +1994,7 @@ fn replacement_can_be_declined_without_writes() {
         let text = screen_text(terminal.backend().buffer());
         for expected in [
             "ALL references",
-            "Loaded config only:",
+            "Loaded config only: 100",
             "possible references.",
             "Enter replaces",
             "Esc cancels",
@@ -1600,97 +2009,107 @@ fn replacement_can_be_declined_without_writes() {
     assert!(!storage.exists() && !app.config.path.exists());
 }
 #[tokio::test]
-async fn local_browser_creation_is_independent_of_environment_mapping() {
-    let mut app = app();
-    app.view = View::Editor(Editor::new(
-        None,
-        "invalid name".into(),
-        Entry {
-            source: "local-storage".into(),
-            value: "previous".into(),
-        },
-    ));
-    assert!(screen(&mut app).contains("Ctrl+B"));
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut tasks = Tasks(vec![]);
-    app.key(
-        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-        &tx,
-        &mut tasks,
-    );
-    assert!(matches!(app.view, View::Editor(_)));
-    app.key(
-        KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
-        &tx,
-        &mut tasks,
-    );
-    app.message(Message::Browse {
-        generation: app.generation,
-        result: Ok(vec![]),
-    });
-    assert!(matches!(app.view, View::Browser { .. }));
-    // Inject listing rather than ever consulting the user's SSH_AUTH_SOCK.
-    app.create_with_identities(async { Ok(vec![]) }, &tx, &mut tasks);
-    assert!(matches!(&app.view, View::Create(c) if c.field == 1));
-    assert!(!screen(&mut app).contains("Environment name"));
-    if let View::Create(c) = &mut app.view {
-        c.busy = false;
-    }
-    app.key(
-        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
-        &tx,
-        &mut tasks,
-    );
-    assert!(app.status.contains("Choose an SSH fingerprint"));
-    // Close the error panel before continuing the draft.
-    key(&mut app, KeyCode::Tab);
-    if let View::Create(c) = &mut app.view {
-        c.focus(1);
-    }
-    app.message(Message::Identities {
-        generation: app.generation,
-        result: Ok(vec![providers::Identity {
-            fingerprint: "SHA256:test".into(),
-            token: vec![],
-        }]),
-    });
-    for expected in [2, 3, 1] {
-        key(&mut app, KeyCode::Tab);
-        assert!(matches!(&app.view, View::Create(c) if c.field == expected));
-    }
-    let storage = app.config.dir().join("ciphertext");
-    if let View::Create(c) = &mut app.view {
-        c.editor.value = Zeroizing::new("id".into());
-        c.pending = Some(Box::new(TestSave {
-            path: storage.clone(),
-            failure: None,
-            replacing: false,
-        }));
-    }
-    app.save_creation(&tx, &mut tasks);
-    loop {
-        let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        let created = matches!(message, Message::Created { .. });
-        app.message(message);
-        if created {
-            break;
+async fn local_browser_creation_is_independent_of_mapping_kind() {
+    for kind in [
+        crate::config::MappingKind::Env,
+        crate::config::MappingKind::File,
+    ] {
+        let mut app = app();
+        app.kind = kind;
+        app.view = View::Editor(Editor::new(
+            None,
+            "invalid name".into(),
+            Entry {
+                kind,
+                source: "local-storage".into(),
+                value: "previous".into(),
+            },
+        ));
+        assert!(screen(&mut app).contains("Ctrl+B"));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tasks = Tasks(vec![]);
+        app.key(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &tx,
+            &mut tasks,
+        );
+        assert!(matches!(app.view, View::Editor(_)));
+        app.key(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            &tx,
+            &mut tasks,
+        );
+        app.message(Message::Browse {
+            generation: app.generation,
+            result: Ok(vec![]),
+        });
+        assert!(matches!(app.view, View::Browser { .. }));
+        // Inject listing rather than ever consulting the user's SSH_AUTH_SOCK.
+        app.create_with_identities(async { Ok(vec![]) }, &tx, &mut tasks);
+        assert!(matches!(&app.view, View::Create(c) if c.field == 1));
+        let text = screen(&mut app);
+        assert!(!text.contains("Environment name") && !text.contains("Destination"));
+        if let View::Create(c) = &mut app.view {
+            c.busy = false;
         }
+        app.key(
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            &tx,
+            &mut tasks,
+        );
+        assert!(app.status.contains("Choose an SSH fingerprint"));
+        // Close the error panel before continuing the draft.
+        key(&mut app, KeyCode::Tab);
+        if let View::Create(c) = &mut app.view {
+            c.focus(1);
+        }
+        app.message(Message::Identities {
+            generation: app.generation,
+            result: Ok(vec![providers::Identity {
+                fingerprint: "SHA256:test".into(),
+                token: vec![],
+            }]),
+        });
+        for expected in [2, 3, 1] {
+            key(&mut app, KeyCode::Tab);
+            assert!(matches!(&app.view, View::Create(c) if c.field == expected));
+        }
+        let storage = app.config.dir().join("ciphertext");
+        if let View::Create(c) = &mut app.view {
+            c.editor.value = Zeroizing::new("id".into());
+            c.pending = Some(Box::new(TestSave {
+                path: storage.clone(),
+                failure: None,
+                replacing: false,
+            }));
+        }
+        app.save_creation(&tx, &mut tasks);
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let created = matches!(message, Message::Created { .. });
+            app.message(message);
+            if created {
+                break;
+            }
+        }
+        assert!(storage.exists());
+        assert!(!app.config.path.exists());
+        assert!(
+            matches!(&app.view, View::Browser { editor, browser } if editor.value.as_str() == "previous" && browser.choices.len() == 1)
+        );
+        key(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.view, View::Editor(e) if e.value.as_str() == "id#SHA256:test"));
+        if let View::Editor(e) = &mut app.view {
+            e.name = "NEW_MAPPING".into();
+        }
+        app.save();
+        assert_eq!(app.config.entries["NEW_MAPPING"].value, "id#SHA256:test");
+        assert!(app.config.entries["NEW_MAPPING"].kind == kind);
+        assert!(!app.config.dir().join("NEW_MAPPING").exists());
     }
-    assert!(storage.exists());
-    assert!(!app.config.path.exists());
-    assert!(
-        matches!(&app.view, View::Browser { editor, browser } if editor.value.as_str() == "previous" && browser.choices.len() == 1)
-    );
-    key(&mut app, KeyCode::Enter);
-    assert!(matches!(&app.view, View::Editor(e) if e.value.as_str() == "id#SHA256:test"));
-    if let View::Editor(e) = &mut app.view {
-        e.name = "NEW_MAPPING".into();
-    }
-    app.save();
-    assert_eq!(app.config.entries["NEW_MAPPING"].value, "id#SHA256:test");
 }
 
 #[tokio::test]
@@ -1701,6 +2120,7 @@ async fn local_browser_cancel_preserves_reference_and_returns_to_browser() {
             None,
             String::new(),
             Entry {
+                kind: crate::config::MappingKind::Env,
                 source: "local-storage".into(),
                 value: "previous".into(),
             },
@@ -1768,6 +2188,7 @@ async fn local_browser_new_row_stays_available_when_filter_has_no_matches() {
             None,
             String::new(),
             Entry {
+                kind: crate::config::MappingKind::Env,
                 source: "local-storage".into(),
                 value: String::new(),
             },
@@ -1871,6 +2292,7 @@ fn reference_browser() -> App {
             None,
             "DRAFT".into(),
             Entry {
+                kind: crate::config::MappingKind::Env,
                 source: "shell".into(),
                 value: "previous".into(),
             },
@@ -2268,88 +2690,205 @@ fn browser_reveal_and_copy_ignore_levels_new_rows_and_loading_lists() {
 
 #[tokio::test]
 async fn browser_ctrl_r_fetches_hides_expires_and_cancels_stale_results() {
-    let mut app = reference_browser();
-    app.paste("second".into());
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut tasks = Tasks(vec![]);
-    let toggle = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
-    app.key(toggle, &tx, &mut tasks);
-    assert_eq!(app.loading.len(), 1);
-    let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    app.message(message);
-    assert!(app.loading.is_empty());
-    assert_eq!(app.revealed.len(), 1);
-    assert_eq!(
-        app.revealed.values().next().unwrap().0.as_str(),
-        "SECOND_SECRET"
-    );
-    assert!(screen(&mut app).contains("SECOND_SECRET"));
-    app.key(toggle, &tx, &mut tasks);
-    assert!(app.revealed.is_empty());
-    assert!(!screen(&mut app).contains("SECOND_SECRET"));
+    for kind in [
+        crate::config::MappingKind::Env,
+        crate::config::MappingKind::File,
+    ] {
+        let mut app = reference_browser();
+        app.kind = kind;
+        if let View::Browser { editor, .. } = &mut app.view {
+            editor.kind = kind;
+        }
+        app.paste("second".into());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tasks = Tasks(vec![]);
+        let toggle = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        app.key(toggle, &tx, &mut tasks);
+        assert_eq!(app.loading.len(), 1);
+        let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.message(message);
+        assert!(app.loading.is_empty());
+        assert_eq!(app.revealed.len(), 1);
+        assert_eq!(
+            app.revealed.values().next().unwrap().0.as_str(),
+            "SECOND_SECRET"
+        );
+        assert!(screen(&mut app).contains("SECOND_SECRET"));
+        app.key(toggle, &tx, &mut tasks);
+        assert!(app.revealed.is_empty());
+        assert!(!screen(&mut app).contains("SECOND_SECRET"));
 
-    app.key(toggle, &tx, &mut tasks);
-    app.message(rx.recv().await.unwrap());
-    for (_, at) in app.revealed.values_mut() {
-        *at = Instant::now() - Duration::from_secs(31);
-    }
-    app.expire();
-    assert!(app.revealed.is_empty());
+        app.key(toggle, &tx, &mut tasks);
+        app.message(rx.recv().await.unwrap());
+        for (_, at) in app.revealed.values_mut() {
+            *at = Instant::now() - Duration::from_secs(31);
+        }
+        app.expire();
+        assert!(app.revealed.is_empty());
 
-    app.key(toggle, &tx, &mut tasks);
-    let message = rx.recv().await.unwrap();
-    assert_eq!(app.loading.len(), 1);
-    app.key(toggle, &tx, &mut tasks);
-    assert!(app.loading.is_empty());
-    app.message(message);
-    assert!(app.revealed.is_empty());
-    assert_eq!(list_query(&app), "second");
-    assert!(matches!(&app.view, View::Browser { editor, .. }
+        app.key(toggle, &tx, &mut tasks);
+        let message = rx.recv().await.unwrap();
+        assert_eq!(app.loading.len(), 1);
+        app.key(toggle, &tx, &mut tasks);
+        assert!(app.loading.is_empty());
+        app.message(message);
+        assert!(app.revealed.is_empty());
+        assert_eq!(list_query(&app), "second");
+        assert!(matches!(&app.view, View::Browser { editor, .. }
         if editor.value.as_str() == "previous" && editor.preview.is_none()));
+    }
 }
 
 #[tokio::test]
 async fn reference_editor_ctrl_r_toggles_fetched_preview_and_ctrl_p_is_inert() {
+    for kind in [
+        crate::config::MappingKind::Env,
+        crate::config::MappingKind::File,
+    ] {
+        let mut app = app();
+        app.kind = kind;
+        app.view = View::Editor(Editor::new(
+            None,
+            "KEY".into(),
+            Entry {
+                kind,
+                source: "shell".into(),
+                value: "printf FETCHED_PREVIEW".into(),
+            },
+        ));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tasks = Tasks(vec![]);
+        app.key(
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            &tx,
+            &mut tasks,
+        );
+        assert!(tasks.0.is_empty());
+        assert!(!app.preview_busy);
+        let toggle = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        app.key(toggle, &tx, &mut tasks);
+        assert!(app.preview_busy);
+        app.message(rx.recv().await.unwrap());
+        assert!(!app.preview_busy);
+        assert!(matches!(&app.view, View::Editor(e)
+        if !e.show && e.preview.as_deref().map(String::as_str) == Some("FETCHED_PREVIEW")
+        && e.preview_at.is_some()));
+        app.key(toggle, &tx, &mut tasks);
+        assert!(!app.preview_busy);
+        assert!(matches!(&app.view, View::Editor(e)
+        if e.preview.is_none() && e.preview_at.is_none() && !e.show));
+
+        app.key(toggle, &tx, &mut tasks);
+        let stale = rx.recv().await.unwrap();
+        app.key(toggle, &tx, &mut tasks);
+        assert!(!app.preview_busy);
+        app.message(stale);
+        assert!(matches!(&app.view, View::Editor(e) if e.preview.is_none()));
+        assert!(!app.config.path.exists());
+    }
+}
+
+#[tokio::test]
+async fn file_contents_are_requested_provider_results_not_destination_contents() {
     let mut app = app();
-    app.view = View::Editor(Editor::new(
-        None,
-        "KEY".into(),
+    let destination = app.config.dir().join("config.local");
+    std::fs::write(&destination, "DESTINATION_PRIVATE").unwrap();
+    let marker = app.config.dir().join("requested");
+    std::fs::write(app.config.dir().join("provider"), "PROVIDER_PRIVATE").unwrap();
+    app.config.entries.insert(
+        "./config.local".into(),
         Entry {
+            kind: crate::config::MappingKind::File,
             source: "shell".into(),
-            value: "printf FETCHED_PREVIEW".into(),
+            value: "printf requested > requested; cat provider".into(),
         },
-    ));
+    );
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut tasks = Tasks(vec![]);
     app.key(
-        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         &tx,
         &mut tasks,
     );
-    assert!(tasks.0.is_empty());
-    assert!(!app.preview_busy);
-    let toggle = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
-    app.key(toggle, &tx, &mut tasks);
-    assert!(app.preview_busy);
-    app.message(rx.recv().await.unwrap());
-    assert!(!app.preview_busy);
-    assert!(matches!(&app.view, View::Editor(e)
-        if !e.show && e.preview.as_deref().map(String::as_str) == Some("FETCHED_PREVIEW")
-        && e.preview_at.is_some()));
-    app.key(toggle, &tx, &mut tasks);
-    assert!(!app.preview_busy);
-    assert!(matches!(&app.view, View::Editor(e)
-        if e.preview.is_none() && e.preview_at.is_none() && !e.show));
-
-    app.key(toggle, &tx, &mut tasks);
-    let stale = rx.recv().await.unwrap();
-    app.key(toggle, &tx, &mut tasks);
-    assert!(!app.preview_busy);
+    assert!(!screen(&mut app).contains("DESTINATION_PRIVATE"));
+    assert!(tasks.0.is_empty() && !marker.exists());
+    app.key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &tx,
+        &mut tasks,
+    );
+    assert!(tasks.0.is_empty() && !marker.exists());
+    app.key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        &tx,
+        &mut tasks,
+    );
+    let message = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(marker.exists());
+    app.message(message);
+    assert!(screen(&mut app).contains("PROVIDER_PRIVATE"));
+    assert!(!app.status.contains("PROVIDER_PRIVATE"));
+    if let View::Editor(e) = &mut app.view {
+        e.preview_at = Some(Instant::now() - Duration::from_secs(31));
+    }
+    app.expire();
+    assert!(!screen(&mut app).contains("PROVIDER_PRIVATE"));
+    app.key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        &tx,
+        &mut tasks,
+    );
+    let stale = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    app.paste("changed draft".into());
     app.message(stale);
     assert!(matches!(&app.view, View::Editor(e) if e.preview.is_none()));
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Tab);
+    app.message(Message::Preview {
+        generation: app.generation - 1,
+        result: Ok(Zeroizing::new("LATE_PRIVATE".into())),
+    });
+    app.message(Message::Copy {
+        generation: app.generation - 1,
+        result: Err(anyhow::anyhow!("STALE_ERROR")),
+    });
+    let text = screen(&mut app);
+    assert!(!text.contains("LATE_PRIVATE") && !text.contains("STALE_ERROR"));
+    assert_eq!(
+        std::fs::read_to_string(destination).unwrap(),
+        "DESTINATION_PRIVATE"
+    );
+}
+
+#[tokio::test]
+async fn file_authoring_validates_destinations_not_environment_names() {
+    let mut app = app();
+    app.kind = crate::config::MappingKind::File;
+    creator(&mut app);
+    if let View::Create(c) = &mut app.view {
+        c.editor.name = "./config.local".into();
+    }
+    ctrl(&mut app, 's');
+    assert!(
+        app.status.contains("Choose an SSH fingerprint"),
+        "{}",
+        app.status
+    );
+    key(&mut app, KeyCode::Tab);
+    if let View::Create(c) = &mut app.view {
+        c.editor.name = "bad\npath".into();
+    }
+    ctrl(&mut app, 's');
+    assert_eq!(app.status, "Invalid destination.");
     assert!(!app.config.path.exists());
 }
 
@@ -2359,6 +2898,7 @@ fn unicode_editing() {
         None,
         "X".into(),
         Entry {
+            kind: crate::config::MappingKind::Env,
             source: "manual".into(),
             value: "é🔑".into(),
         },

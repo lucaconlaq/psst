@@ -36,6 +36,15 @@ impl Pty {
         socket: Option<&Path>,
         timeout: u64,
     ) -> Self {
+        Self::start_args(config, bin, socket, timeout, &[])
+    }
+    fn start_args(
+        config: &Path,
+        bin: Option<&Path>,
+        socket: Option<&Path>,
+        timeout: u64,
+        args: &[&str],
+    ) -> Self {
         let mut master = -1;
         let mut slave = -1;
         let mut size = libc::winsize {
@@ -68,6 +77,7 @@ impl Pty {
         let before = attrs(&master);
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("psst"));
         command
+            .args(args)
             .env_remove("SSH_AUTH_SOCK")
             .env("PSST_CONFIG", config)
             .env("PSST_TIMEOUT", timeout.to_string())
@@ -75,6 +85,9 @@ impl Pty {
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave.try_clone().unwrap()));
+        if !args.is_empty() {
+            command.env("TMPDIR", config.parent().unwrap());
+        }
         if let Some(socket) = socket {
             command.env("SSH_AUTH_SOCK", socket);
         }
@@ -107,16 +120,22 @@ impl Pty {
         }
     }
     fn local_storage_browser(&mut self) {
+        self.local_storage_browser_for("Environment name");
+    }
+    fn local_storage_browser_for(&mut self, label: &str) {
         self.send(b"\x0e");
-        self.wait_text("Environment name");
+        self.wait_text(label);
         // The normal draft starts with manual; advance to local-storage.
         self.send(b"\t\x1b[C\x1b[C\x02");
         self.wait_text("Local storage IDs");
-        self.wait_without_text("Environment name");
+        self.wait_without_text(label);
         self.wait_text("Type filters"); // Wait for the browser load to finish.
     }
     fn encrypted_draft(&mut self, id: &str) {
-        self.local_storage_browser();
+        self.encrypted_draft_for(id, "Environment name");
+    }
+    fn encrypted_draft_for(&mut self, id: &str, label: &str) {
+        self.local_storage_browser_for(label);
         self.send(b"\x0e");
         self.wait_text("Create encrypted value");
         self.wait_text("Masked exact text");
@@ -264,6 +283,313 @@ fn attrs(file: &File) -> libc::termios {
     );
     unsafe { attr.assume_init() }
 }
+fn assert_materialization_cleanup(root: &Path) {
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(!name.starts_with("psst-files-") && !name.starts_with(".psst-write-"));
+        if entry.file_type().unwrap().is_dir() {
+            assert_materialization_cleanup(&entry.path());
+        }
+    }
+}
+
+fn cancel_materialization(pty: &mut Pty, root: &Path) {
+    pty.send(b"\x03");
+    let start = Instant::now();
+    loop {
+        pty.read();
+        if let Some(status) = pty.child.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(130), "{}", pty.history);
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "Ctrl+C did not exit"
+        );
+    }
+    while pty.read() > 0 {}
+    for contents in ["STAGED_PRIVATE", "RESOLVED_PRIVATE", "ORIGINAL_PRIVATE"] {
+        assert!(!pty.history.contains(contents));
+    }
+    assert_materialization_cleanup(root);
+}
+
+#[test]
+fn managed_file_ctrl_c_during_subprocess_resolution_and_consent() {
+    for consent in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("custom.json");
+        if consent {
+            fs::write(root.path().join("wait"), b"ORIGINAL_PRIVATE").unwrap();
+        }
+        fs::write(
+            &config,
+            serde_json::json!({
+                "first": {"type":"file", "source":"manual", "value":"STAGED_PRIVATE"},
+                "wait": {"type":"file", "source":"shell", "value": if consent {
+                    "printf RESOLVED_PRIVATE"
+                } else {
+                    "printf '%s' $$ > provider-pid; exec sleep 60"
+                }}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut pty = Pty::start_args(&config, None, None, 30, &["--write-files"]);
+        if consent {
+            pty.wait_text("Replace all? [y/N]");
+        } else {
+            pty.wait_file(&root.path().join("provider-pid"));
+        }
+        // Readiness is signalled by the provider/prompt, never a fixed sleep.
+        let stages: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("psst-files-")
+            })
+            .collect();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(
+            fs::read_dir(&stages[0]).unwrap().count(),
+            if consent { 2 } else { 1 }
+        );
+        cancel_materialization(&mut pty, root.path());
+        assert!(!root.path().join("first").exists());
+        if consent {
+            assert_eq!(
+                fs::read(root.path().join("wait")).unwrap(),
+                b"ORIGINAL_PRIVATE"
+            );
+        } else {
+            assert!(!root.path().join("wait").exists());
+            let pid: i32 = fs::read_to_string(root.path().join("provider-pid"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let start = Instant::now();
+            loop {
+                let alive = unsafe { libc::kill(pid, 0) } == 0;
+                #[cfg(target_os = "linux")]
+                let alive = alive
+                    && fs::read_to_string(format!("/proc/{pid}/stat"))
+                        .is_ok_and(|stat| !stat.split_once(") ").unwrap().1.starts_with('Z'));
+                if !alive {
+                    break;
+                }
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "provider survived cancellation"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_file_ctrl_c_during_agent_signing_closes_socket_and_staging() {
+    use std::sync::atomic::Ordering;
+    let agent = support::agent::FakeAgent::new().await;
+    agent.delay();
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join(".psst")).unwrap();
+    fs::set_permissions(root.path().join(".psst"), fs::Permissions::from_mode(0o700)).unwrap();
+    let record = root.path().join(".psst").join(agent.key.filename());
+    fs::write(&record, include_bytes!("fixtures/local-storage-v1.json")).unwrap();
+    fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+    let config = root.path().join("custom.json");
+    fs::write(
+        &config,
+        serde_json::json!({
+            "first": {"type":"file", "source":"manual", "value":"STAGED_PRIVATE"},
+            "wait": {"type":"file", "source":"local-storage", "value":"fixture"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut pty = Pty::start_args(&config, None, Some(&agent.socket()), 30, &["--write-files"]);
+    agent.requested().await;
+    assert_eq!(agent.signs(), 1);
+    cancel_materialization(&mut pty, root.path());
+    assert!(!root.path().join("first").exists());
+    assert!(!root.path().join("wait").exists());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while agent.state.closed.load(Ordering::SeqCst)
+            < agent.state.connections.load(Ordering::SeqCst)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(agent.signs(), 1);
+    assert_eq!(
+        fs::read(&record).unwrap(),
+        include_bytes!("fixtures/local-storage-v1.json")
+    );
+    assert!(!pty.history.contains("🔑"));
+}
+
+#[test]
+fn managed_file_batch_consent_approval_refusal_and_stale_targets() {
+    for (answer, approve, mutate) in [
+        (b"y\n".as_slice(), true, false),
+        (b"n\n", false, false),
+        (b"\n", false, false),
+        (b"yes\n", true, true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("custom.json");
+        let first = root.path().join("replace-one");
+        let second = root.path().join("replace-two");
+        let same = root.path().join("same");
+        for path in [&first, &second, &same] {
+            fs::write(path, b"OLD_PRIVATE").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        fs::write(
+            &config,
+            serde_json::json!({
+                "new/deep/one": {"type":"file", "source":"manual", "value":"NEW_PRIVATE"},
+                "new/deep/two": {"type":"file", "source":"manual", "value":"NEW_PRIVATE"},
+                "replace-one": {"type":"file", "source":"manual", "value":"NEW_PRIVATE"},
+                "replace-two": {"type":"file", "source":"manual", "value":"NEW_PRIVATE"},
+                "same": {"type":"file", "source":"manual", "value":"OLD_PRIVATE"},
+                "bad": {"type":"file", "source":"unknown", "value":"HIDDEN_PRIVATE"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut pty = Pty::start_args(&config, None, None, 30, &["--write-files"]);
+        pty.wait_text("Replace all? [y/N]");
+        assert!(!root.path().join("new").exists());
+        assert_eq!(fs::read(&first).unwrap(), b"OLD_PRIVATE");
+        assert_eq!(fs::read(&second).unwrap(), b"OLD_PRIVATE");
+        let prompt = pty.history.find("Replace all? [y/N]").unwrap();
+        assert!(pty.history.find("bad: failed").unwrap() < prompt);
+        assert!(pty.history[..prompt].contains(first.to_str().unwrap()));
+        assert!(pty.history[..prompt].contains(second.to_str().unwrap()));
+        if mutate {
+            fs::write(&first, b"EXTERNAL_PRIVATE").unwrap();
+        }
+        pty.send(answer);
+        let start = Instant::now();
+        loop {
+            pty.read();
+            if let Some(status) = pty.child.try_wait().unwrap() {
+                assert!(!status.success()); // The provider failure is best effort.
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "consent did not finish"
+            );
+        }
+        while pty.read() > 0 {}
+        assert_eq!(pty.history.matches("Replace all? [y/N]").count(), 1);
+        for hidden in [
+            "OLD_PRIVATE",
+            "NEW_PRIVATE",
+            "HIDDEN_PRIVATE",
+            "EXTERNAL_PRIVATE",
+        ] {
+            assert!(!pty.history.contains(hidden));
+        }
+        if approve {
+            assert_eq!(
+                fs::read(root.path().join("new/deep/one")).unwrap(),
+                b"NEW_PRIVATE"
+            );
+            assert_eq!(
+                fs::read(root.path().join("new/deep/two")).unwrap(),
+                b"NEW_PRIVATE"
+            );
+            assert_eq!(fs::read(&second).unwrap(), b"NEW_PRIVATE");
+            assert_eq!(
+                fs::read(&first).unwrap(),
+                if mutate {
+                    b"EXTERNAL_PRIVATE".as_slice()
+                } else {
+                    b"NEW_PRIVATE".as_slice()
+                }
+            );
+            assert!(pty.history.contains("same: unchanged"));
+            if mutate {
+                assert!(
+                    pty.history
+                        .contains("replace-one: failed before replacement")
+                );
+            }
+        } else {
+            assert!(!root.path().join("new").exists());
+            assert_eq!(fs::read(&first).unwrap(), b"OLD_PRIVATE");
+            assert_eq!(fs::read(&second).unwrap(), b"OLD_PRIVATE");
+        }
+        assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name();
+            !name.to_string_lossy().starts_with("psst-files-")
+                && !name.to_string_lossy().starts_with(".psst-write-")
+        }));
+        assert_eq!(attrs(&pty.master).c_lflag, pty.before.c_lflag);
+    }
+}
+
+#[test]
+fn files_dashboard_edits_only_mappings_and_restores_terminal() {
+    let t = tempfile::tempdir().unwrap();
+    let config = t.path().join("psst.json");
+    let destination = t.path().join("TOKEN");
+    fs::write(&destination, "untouched destination").unwrap();
+    fs::write(&config, r#"{"TOKEN":{"source":"manual","value":"environment"},"./TOKEN":{"type":"file","source":"manual","value":"file contents"}}"#).unwrap();
+    let mut pty = Pty::start(&config, None);
+    pty.wait_text("Entries · 1");
+    pty.send(b"\t");
+    pty.wait_text("Files · 1");
+    pty.wait_text("DESTINATION");
+    assert!(!pty.parser.screen().contents().contains("file contents"));
+    pty.send(b"\r");
+    pty.wait_text("Destination");
+    pty.send(b"\t\t\x1b[200~ changed\x1b[201~\x13");
+    pty.wait_text("psst --write-files");
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json["./TOKEN"]["value"], "file contents changed");
+    assert_eq!(json["./TOKEN"]["type"], "file");
+    assert_eq!(json["TOKEN"]["value"], "environment");
+    pty.send(b"\x04");
+    pty.wait_text("Confirm deletion");
+    pty.wait_text("Destination and provider contents kept");
+    assert!(!pty.parser.screen().contents().contains("Remove ciphertext"));
+    pty.send(b"\t\x1b");
+    pty.wait_text("Deletion cancelled");
+    pty.send(b"\x04\r");
+    pty.wait_text("Files · 0");
+    assert_eq!(
+        fs::read_to_string(&destination).unwrap(),
+        "untouched destination"
+    );
+    pty.send(b"\x0e");
+    pty.wait_text("Destination");
+    pty.send(b"\x1b[200~unsaved-file\x1b[201~\x1b");
+    pty.wait_text("Changes discarded");
+    pty.send(b"\x1bOP");
+    pty.wait_text("MANAGE ENTRIES AND FILES");
+    pty.send(b"\x1b");
+    pty.wait_text("Returned from help");
+    pty.send(b"\t");
+    pty.wait_text("Entries · 1");
+    pty.send(b"\x03");
+    pty.finish();
+    let json: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(json.as_object().unwrap().len(), 1);
+    assert_eq!(json["TOKEN"]["value"], "environment");
+}
+
 #[test]
 fn actual_keys_add_save_reveal_hide_delete_and_restore_terminal() {
     let t = tempfile::tempdir().unwrap();
@@ -319,18 +645,18 @@ fn dashboard_types_filters_backspace_erases_f1_returns_and_escape_quits() {
         pty.wait_text("BETA");
         // Former action keys are ordinary filter text, including q (not quit).
         pty.send(b"aq");
-        pty.wait_text("Filter: aq · 1 matches");
+        pty.wait_text("Entries · 1 · Filter: aq");
         assert!(!pty.parser.screen().contents().contains("Environment name"));
         assert!(!pty.parser.screen().contents().contains("BETA"));
         pty.send(b"\x7f");
-        pty.wait_text("Filter: a · 2 matches");
+        pty.wait_text("Entries · 2 · Filter: a");
         pty.send(b"\x1bOP"); // F1 in an xterm terminal.
         pty.wait_text("Help");
         pty.send(b"\x1b");
-        pty.wait_text("Filter: a · 2 matches");
+        pty.wait_text("Entries · 2 · Filter: a");
         if !filtered {
             pty.send(b"\x7f");
-            pty.wait_text("Secrets · 2");
+            pty.wait_text("Entries · 2");
         }
         pty.wait_text("Esc  quit");
         pty.send(b"\x1b");
@@ -587,82 +913,95 @@ async fn ctrl_y_copies_exact_bytes_and_reports_failure_in_all_five_views() {
     let fake = FakeAgent::new().await;
     let root = std::env::temp_dir().canonicalize().unwrap();
     let value = "  DUMMY_CLIPBOARD_雪\nsecond line\t ";
-    for view in ["dashboard", "reference", "browser", "manual", "encrypted"] {
-        let dir = tempfile::tempdir_in(&root).unwrap();
-        let config = dir.path().join("psst.json");
-        let source = if view == "manual" {
-            "manual"
+    for kind in ["env", "file"] {
+        let label = if kind == "file" {
+            "Destination"
         } else {
-            "local-storage"
+            "Environment name"
         };
-        let reference = if view == "manual" { "" } else { "id" };
-        fs::write(
-            &config,
-            serde_json::json!({"KEY": {"source": source, "value": reference}}).to_string(),
-        )
-        .unwrap();
-        let config_before = fs::read(&config).unwrap();
-        let mut stored = StoredKey::load(dir.path(), fake.key.clone()).unwrap();
-        stored.set(&fake.client, "id", value).await.unwrap();
-        let storage = dir.path().join(".psst").join(fake.key.filename());
-        let storage_before = fs::read(&storage).unwrap();
-        let bin = dir.path().join("bin");
-        fs::create_dir(&bin).unwrap();
-        let clipboard = dir.path().join("clipboard");
-        let fail = dir.path().join("fail-helper");
-        for helper in ["pbcopy", "wl-copy", "xclip", "xsel"] {
-            let path = bin.join(helper);
+        for view in ["dashboard", "reference", "browser", "manual", "encrypted"] {
+            let dir = tempfile::tempdir_in(&root).unwrap();
+            let config = dir.path().join("psst.json");
+            let source = if view == "manual" {
+                "manual"
+            } else {
+                "local-storage"
+            };
+            let reference = if view == "manual" { "" } else { "id" };
             fs::write(
-                &path,
-                format!(
-                    "#!/bin/sh\nif [ -f '{}' ]; then exit 1; fi\n/bin/cat > '{}'\n",
-                    fail.display(),
-                    clipboard.display()
-                ),
+                &config,
+                serde_json::json!({"KEY": {"type": kind, "source": source, "value": reference}})
+                    .to_string(),
             )
             .unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        let mut pty = Pty::start_with_agent(&config, Some(&bin), Some(&fake.socket()));
-        pty.wait_text("KEY");
-        match view {
-            "reference" => {
-                pty.send(b"\r");
-                pty.wait_text("Environment name");
+            let config_before = fs::read(&config).unwrap();
+            let mut stored = StoredKey::load(dir.path(), fake.key.clone()).unwrap();
+            stored.set(&fake.client, "id", value).await.unwrap();
+            let storage = dir.path().join(".psst").join(fake.key.filename());
+            let storage_before = fs::read(&storage).unwrap();
+            let bin = dir.path().join("bin");
+            fs::create_dir(&bin).unwrap();
+            let clipboard = dir.path().join("clipboard");
+            let fail = dir.path().join("fail-helper");
+            for helper in ["pbcopy", "wl-copy", "xclip", "xsel"] {
+                let path = bin.join(helper);
+                fs::write(
+                    &path,
+                    format!(
+                        "#!/bin/sh\nif [ -f '{}' ]; then exit 1; fi\ncat > '{}'\n",
+                        fail.display(),
+                        clipboard.display()
+                    ),
+                )
+                .unwrap();
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
             }
-            "browser" => pty.local_storage_browser(),
-            "manual" => {
-                pty.send(b"\r");
-                pty.wait_text("Environment name");
-                pty.send(b"\t\t");
-                pty.send(format!("\x1b[200~{value}\x1b[201~").as_bytes());
+            let mut pty = Pty::start_with_agent(&config, Some(&bin), Some(&fake.socket()));
+            if kind == "file" {
+                pty.wait_text("+ New entry");
+                pty.send(b"\t");
             }
-            "encrypted" => {
-                pty.encrypted_draft("unsaved");
-                pty.send(format!("\x1b[200~{value}\x1b[201~").as_bytes());
+            pty.wait_text("KEY");
+            match view {
+                "reference" => {
+                    pty.send(b"\r");
+                    pty.wait_text(label);
+                }
+                "browser" => pty.local_storage_browser_for(label),
+                "manual" => {
+                    pty.send(b"\r");
+                    pty.wait_text(label);
+                    pty.send(b"\t\t");
+                    pty.send(format!("\x1b[200~{value}\x1b[201~").as_bytes());
+                }
+                "encrypted" => {
+                    pty.encrypted_draft_for("unsaved", label);
+                    pty.send(format!("\x1b[200~{value}\x1b[201~").as_bytes());
+                }
+                _ => {}
             }
-            _ => {}
+            let signs = fake.signs();
+            let connections = fake.state.connections.load(Ordering::SeqCst);
+            let draft = matches!(view, "manual" | "encrypted");
+            pty.send(b"\x19");
+            pty.wait_text("Copied.");
+            assert_eq!(fs::read(&clipboard).unwrap(), value.as_bytes(), "{view}");
+            assert_eq!(fake.signs(), signs + usize::from(!draft), "{view}");
+            fs::write(&fail, "fail").unwrap();
+            pty.send(b"\x19");
+            pty.wait_text("Clipboard helper failed");
+            assert_eq!(fs::read(&clipboard).unwrap(), value.as_bytes());
+            assert_eq!(fake.signs(), signs + 2 * usize::from(!draft), "{view}");
+            if draft {
+                assert_eq!(fake.state.connections.load(Ordering::SeqCst), connections);
+            }
+            assert!(!pty.history.contains("DUMMY_CLIPBOARD"));
+            assert_eq!(fs::read(&config).unwrap(), config_before);
+            assert_eq!(fs::read(&storage).unwrap(), storage_before);
+            assert!(!dir.path().join("KEY").exists());
+            pty.send(b"\x03");
+            pty.finish();
         }
-        let signs = fake.signs();
-        let connections = fake.state.connections.load(Ordering::SeqCst);
-        let draft = matches!(view, "manual" | "encrypted");
-        pty.send(b"\x19");
-        pty.wait_text("Copied.");
-        assert_eq!(fs::read(&clipboard).unwrap(), value.as_bytes(), "{view}");
-        assert_eq!(fake.signs(), signs + usize::from(!draft), "{view}");
-        fs::write(&fail, "fail").unwrap();
-        pty.send(b"\x19");
-        pty.wait_text("Clipboard helper failed");
-        assert_eq!(fs::read(&clipboard).unwrap(), value.as_bytes());
-        assert_eq!(fake.signs(), signs + 2 * usize::from(!draft), "{view}");
-        if draft {
-            assert_eq!(fake.state.connections.load(Ordering::SeqCst), connections);
-        }
-        assert!(!pty.history.contains("DUMMY_CLIPBOARD"));
-        assert_eq!(fs::read(&config).unwrap(), config_before);
-        assert_eq!(fs::read(&storage).unwrap(), storage_before);
-        pty.send(b"\x03");
-        pty.finish();
     }
 }
 
@@ -1141,6 +1480,7 @@ async fn encrypted_deletion_default_cancel_explicit_and_unresolved_restore_termi
             format!("id#{}", fake.key.fingerprint())
         };
         let entry = |value| Entry {
+            kind: psst::config::MappingKind::Env,
             source: "local-storage".into(),
             value,
         };
@@ -1276,6 +1616,7 @@ async fn encrypted_browser_link_and_shared_update_preserve_ciphertext_and_other_
     let path = dir.path().join("psst.json");
     let selected = format!("shared#{}", fake.key.fingerprint());
     let entry = |value: String| Entry {
+        kind: psst::config::MappingKind::Env,
         source: "local-storage".into(),
         value,
     };
@@ -1284,6 +1625,13 @@ async fn encrypted_browser_link_and_shared_update_preserve_ciphertext_and_other_
         .save(
             [
                 ("FIRST".into(), entry(selected.clone())),
+                (
+                    "./shared-file".into(),
+                    Entry {
+                        kind: psst::config::MappingKind::File,
+                        ..entry(selected.clone())
+                    },
+                ),
                 (
                     "OTHER".into(),
                     entry(format!("shared#{}", other.fingerprint())),
@@ -1349,7 +1697,7 @@ async fn encrypted_browser_link_and_shared_update_preserve_ciphertext_and_other_
         pty.parser
             .screen()
             .contents()
-            .contains("Loaded config only: 2")
+            .contains("Loaded config only: 3")
     );
     assert!(
         pty.parser
@@ -1388,6 +1736,167 @@ async fn encrypted_browser_link_and_shared_update_preserve_ciphertext_and_other_
     assert!(!pty.history.contains("UPDATED_SECRET") && !pty.history.contains("OLD_SECRET"));
     pty.send(b"\x03");
     pty.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_authoring_linking_and_browser_deletion_keep_destinations_untouched() {
+    use psst::config::Config;
+    use psst::providers::local_storage::StoredKey;
+    let fake = support::agent::FakeAgent::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("psst.json");
+    fs::write(
+        &config,
+        r#"{"ENV":{"source":"local-storage","value":"shared"}}"#,
+    )
+    .unwrap();
+    let config_before = fs::read(&config).unwrap();
+    let destination = dir.path().join("config.local");
+    fs::write(&destination, "DESTINATION_ONLY").unwrap();
+    let mut pty = Pty::start_with_agent(&config, None, Some(&fake.socket()));
+    pty.wait_text("ENV");
+    pty.send(b"\t");
+    pty.wait_text("+ New file");
+    pty.encrypted_draft_for("shared", "Destination");
+    pty.send(b"\x1b[200~AUTHORED_PRIVATE\x1b[201~\x13");
+    pty.wait_text("Value stored; configuration unchanged");
+    assert_eq!(fs::read(&config).unwrap(), config_before);
+    let storage = dir.path().join(".psst").join(fake.key.filename());
+    let stored = fs::read(&storage).unwrap();
+    pty.send(b"\r");
+    pty.wait_text("Reference selected");
+    // A literal destination is not an environment name. Linking is a separate save.
+    pty.send(b"\x1b[Z\x1b[Z\x1b[200~./config.local\x1b[201~\x13");
+    pty.wait_text("psst --write-files");
+    let loaded = Config::load(config.clone()).unwrap();
+    assert_eq!(
+        loaded.entries["./config.local"].value,
+        format!("shared#{}", fake.key.fingerprint())
+    );
+    assert!(loaded.entries["./config.local"].kind == psst::config::MappingKind::File);
+    assert_eq!(fs::read(&storage).unwrap(), stored);
+    let linked = fs::read(&config).unwrap();
+    let signs = fake.signs();
+    pty.send(b"\r\x02");
+    pty.wait_text("Local storage IDs");
+    pty.wait_text("Type filters");
+    pty.send(b"\x04");
+    pty.wait_text("Delete encrypted value?");
+    pty.wait_text("Possible references: 2");
+    pty.wait_text("Other configurations may also use it.");
+    pty.send(b"n");
+    pty.wait_without_text("Delete encrypted value?");
+    assert_eq!(fs::read(&storage).unwrap(), stored);
+    pty.send(b"\x04y");
+    pty.wait_text("configuration unchanged");
+    assert!(
+        StoredKey::load(dir.path(), fake.key.clone())
+            .unwrap()
+            .records()
+            .is_empty()
+    );
+    assert_eq!(fake.signs(), signs);
+    assert_eq!(fs::read(&config).unwrap(), linked);
+    assert_eq!(
+        fs::read_to_string(&destination).unwrap(),
+        "DESTINATION_ONLY"
+    );
+    assert!(!pty.history.contains("AUTHORED_PRIVATE") && !pty.history.contains("DESTINATION_ONLY"));
+    pty.send(b"\x03");
+    pty.finish();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn files_author_save_materialize_and_environment_compatibility() {
+    use psst::config::{Config, MappingKind};
+    let fake = support::agent::FakeAgent::new().await;
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::tempdir_in(root).unwrap();
+    let config = dir.path().join("psst.json");
+    fs::write(
+        &config,
+        r#"{"ENV":{"source":"manual","value":"LEGACY_ENV"}}"#,
+    )
+    .unwrap();
+    let before = fs::read(&config).unwrap();
+    let destination = dir.path().join("nested/config.local");
+    let text = " \nAUTHORED_FIXTURE\t☃\n";
+    let mut pty = Pty::start_with_agent(&config, None, Some(&fake.socket()));
+    pty.wait_text("ENV");
+    pty.send(b"\t");
+    pty.wait_text("+ New file");
+    pty.encrypted_draft_for("integrated", "Destination");
+    pty.send(format!("\x1b[200~{text}\x1b[201~\x13").as_bytes());
+    pty.wait_text("Value stored; configuration unchanged");
+    assert_eq!(fs::read(&config).unwrap(), before);
+    assert!(!destination.exists());
+    pty.send(b"\r");
+    pty.wait_text("Reference selected");
+    pty.send(b"\x1b[Z\x1b[Z\x1b[200~./nested/config.local\x1b[201~\x13");
+    pty.wait_text("psst --write-files");
+    let loaded = Config::load(config.clone()).unwrap();
+    assert!(loaded.entries["ENV"].kind == MappingKind::Env);
+    assert!(loaded.entries["./nested/config.local"].kind == MappingKind::File);
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(saved["ENV"]["type"], "env");
+    assert_eq!(saved["./nested/config.local"]["type"], "file");
+    assert!(!destination.exists());
+    assert!(!pty.history.contains("AUTHORED_FIXTURE"));
+    pty.send(b"\x03");
+    pty.finish();
+
+    let storage = dir.path().join(".psst").join(fake.key.filename());
+    let ciphertext = fs::read(&storage).unwrap();
+    let signs = fake.signs();
+    let caller = dir.path().join("caller");
+    fs::create_dir(&caller).unwrap();
+    let run = |args: &[&str]| {
+        let mut command = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("psst"));
+        command
+            .current_dir(&caller)
+            .env("PSST_CONFIG", &config)
+            .env("SSH_AUTH_SOCK", fake.socket())
+            .env("PSST_TIMEOUT", "5")
+            .env("TMPDIR", dir.path())
+            .args(args)
+            .timeout(Duration::from_secs(10));
+        command.assert().success().get_output().clone()
+    };
+    let wrapped = run(&["/bin/sh", "-c", "printf '%s' \"$ENV\""]);
+    assert_eq!(wrapped.stdout, b"LEGACY_ENV");
+    run(&["--write"]);
+    assert_eq!(fs::read(caller.join(".env")).unwrap(), b"ENV=LEGACY_ENV\n");
+    assert_eq!(fake.signs(), signs);
+    assert!(!destination.exists());
+    assert!(!caller.join("nested").exists());
+
+    for outcome in ["written", "unchanged"] {
+        let output = run(&["--write-files"]);
+        let report = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            report.contains(&format!("./nested/config.local: {outcome}")),
+            "{report}"
+        );
+        assert!(!report.contains("AUTHORED_FIXTURE") && !report.contains("Replace all?"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("AUTHORED_FIXTURE"));
+        assert_eq!(fs::read(&destination).unwrap(), text.as_bytes());
+        assert_eq!(
+            fs::metadata(&destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(destination.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(fs::read(&storage).unwrap(), ciphertext);
+        assert_materialization_cleanup(dir.path());
+        assert_materialization_cleanup(destination.parent().unwrap());
+    }
+    assert_eq!(fake.signs(), signs + 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

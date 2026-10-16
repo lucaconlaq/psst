@@ -7,6 +7,10 @@ pub struct Args {
     pub copy: Option<OsString>,
     /// Export nonempty resolved values to the caller's .env.
     pub write: bool,
+    /// Explicit managed-file materialization, never inferred from wrapped argv.
+    pub write_files: bool,
+    /// Approve replacements, without bypassing destination safety.
+    pub yes: bool,
     /// Print help unless copy or write takes priority.
     pub help: bool,
     /// Print version without loading configuration or dispatching other actions.
@@ -25,6 +29,19 @@ impl Args {
             match arg.to_str() {
                 Some("--") => {
                     result.command.extend(args);
+                    break;
+                }
+                Some("--write-files")
+                    if result.command.is_empty() && !result.write && result.copy.is_none() =>
+                {
+                    result.write_files = true;
+                    for option in args {
+                        match option.to_str() {
+                            Some("--yes") => result.yes = true,
+                            Some("--help" | "-h") => result.help = true,
+                            _ => bail!("Usage: psst --write-files [--yes]"),
+                        }
+                    }
                     break;
                 }
                 Some("--copy") => {
@@ -58,15 +75,56 @@ impl Args {
     }
 }
 /// Noninteractive usage text, printed without loading configuration.
-pub const HELP: &str = "psst — secrets, quietly\n\nUsage: psst [--copy NAME | --write] [--] [COMMAND [ARGS...]]\n\n  psst                      Open the secret manager\n  psst command args...      Fetch secrets in parallel and run command\n  psst --copy NAME          Copy one secret (literal bytes, no newline)\n  psst --write              Atomically overwrite .env in current directory\n  psst -h, --help           Show this help\n  psst -V, --version        Show version\n";
+pub const HELP: &str = "psst — secrets, quietly
+
+Usage: psst [--copy NAME | --write] [--] [COMMAND [ARGS...]]
+       psst --write-files [--yes]
+
+  psst                      Open the TUI
+  psst command args...      Fetch environment entries in parallel and run command
+  psst --copy NAME          Copy one secret (literal bytes, no newline)
+  psst --write              Atomically overwrite .env in current directory
+  psst --write-files [--yes] Materialize all managed files with batch replacement consent
+  psst -h, --help           Show this help
+  psst -V, --version        Show version
+";
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn help_ends_after_options() {
-        assert!(HELP.ends_with("  psst -V, --version        Show version\n"));
+    fn help_includes_usage_and_options_only() {
+        assert!(HELP.contains("  psst -V, --version        Show version\n"));
+        assert!(HELP.contains("psst --write-files [--yes]"));
+        assert!(HELP.contains("Open the TUI"));
+        for control in ["Dashboard", "Ctrl+N", "Ctrl+S", "F1", "Legacy untagged"] {
+            assert!(!HELP.contains(control));
+        }
+        assert!(HELP.ends_with("Show version\n"));
         for removed in ["Config:", "UI:", "Provider timeout:"] {
             assert!(!HELP.contains(removed));
+        }
+    }
+    #[test]
+    fn write_files_option() {
+        let args = Args::parse(["--write-files", "--yes"].map(Into::into)).unwrap();
+        assert!(args.write_files && args.yes);
+        assert!(args.command.is_empty());
+        let args = Args::parse(["--write-files", "--help"].map(Into::into)).unwrap();
+        assert!(args.write_files && args.help);
+        assert!(Args::parse(["--write-files", "unexpected"].map(Into::into)).is_err());
+        for argv in [
+            vec!["write-files", "--yes"],
+            vec!["--", "--write-files", "--yes"],
+            vec!["command", "--write-files", "--yes"],
+        ] {
+            let args = Args::parse(argv.iter().map(OsString::from)).unwrap();
+            assert!(!args.write_files && !args.yes);
+            let expected: Vec<_> = argv
+                .into_iter()
+                .filter(|arg| *arg != "--")
+                .map(OsString::from)
+                .collect();
+            assert_eq!(args.command, expected);
         }
     }
     #[test]

@@ -122,7 +122,13 @@ ordered so that partial success never bypasses batch replacement consent.
 1. **Validate configuration-wide destinations.** Before provider fetching, reject
    aliases that resolve to the same destination and destinations targeting psst
    configuration files, their lock files, or `.psst` storage. These are
-   configuration-wide errors: stop the run rather than process a subset.
+   configuration-wide errors: stop the run rather than process a subset. Establish
+   destination filesystem name-equivalence semantics using reliable read-only
+   checks, including missing components and mount boundaries. If equivalence
+   cannot be checked reliably, fail closed: reject the entire run before fetching
+   or modifying destinations, even with `--yes`. Do not assume Linux filesystems
+   are always case-sensitive or approximate Unicode equivalence. Document the
+   resulting filesystem/path support limitations.
 2. **Resolve and stage.** Resolve files sequentially through existing providers,
    preserving their working-directory, timeout, stricter size, and empty-value
    rules. Limit each resolved UTF-8 result to 4 MiB. Stage successful results in
@@ -249,6 +255,12 @@ new production approval to that provider.
   placeholders and shortcuts as final product behavior.
 
 ## Further Notes
+
+### Verification status
+
+Locally verifiable evidence is finalized in the [release-verification ticket](../tickets/managed-files/07-release-verification.md#final-local-reconciliation), including commands/results, immutable source/test snapshot identity, the complete acceptance matrix, and native macOS handoff. Supplied independent final static Spec review passed 30/30 selected files against fixed base `20f516288522578052ef853a795a5dcb340fca0c`, including reused code, safety boundaries, and integrated author/save/materialize behavior. Separate Rules review passed introduced changes in 30/30 files; seven unchanged preexisting comment-width findings remain. A fresh pinned Rust 1.88.0 Linux formatting/Clippy/full-test run passed all 266 tests without source/test changes. Tickets 01–06 remain `done`; ticket 07 remains `in-progress` with its native macOS platform criterion unchecked. Native macOS execution is outstanding, not waived; static review, Linux execution, and earlier cross-compilation do not satisfy that gate. This is not full implementation or release completion, and existing local-storage release limitations remain unchanged. Requirements are unchanged.
+
+### Context and limitations
 
 Managed destinations and staging contain plaintext. A crash can leave plaintext
 staging behind despite normal cleanup; users must be warned and may need to

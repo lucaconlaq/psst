@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 pub(super) struct Editor {
+    pub(super) kind: crate::config::MappingKind,
     pub(super) original: Option<String>,
     pub(super) name: String,
     pub(super) source: String,
@@ -18,6 +19,7 @@ impl Editor {
     pub(super) fn new(original: Option<String>, name: String, entry: Entry) -> Self {
         let cursor = name.chars().count();
         Self {
+            kind: entry.kind,
             original,
             name,
             source: entry.source,
@@ -28,6 +30,12 @@ impl Editor {
             shown_at: None,
             preview: None,
             preview_at: None,
+        }
+    }
+    pub(super) fn name_label(&self) -> &'static str {
+        match self.kind {
+            crate::config::MappingKind::Env => "Environment name",
+            crate::config::MappingKind::File => "Destination",
         }
     }
     pub(super) fn toggle_reveal(&mut self) {
@@ -52,6 +60,7 @@ impl Editor {
     }
     pub(super) fn entry(&self) -> Entry {
         Entry {
+            kind: self.kind,
             source: self.source.clone(),
             value: self.value.to_string(),
         }

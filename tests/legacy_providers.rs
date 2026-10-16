@@ -14,6 +14,7 @@ fn legacy_source_identifiers() {
 
 fn entry(source: &str, value: &str) -> Entry {
     Entry {
+        kind: psst::config::MappingKind::Env,
         source: source.into(),
         value: value.into(),
     }

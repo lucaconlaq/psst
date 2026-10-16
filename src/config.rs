@@ -8,15 +8,42 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The purpose of a configuration mapping; legacy mappings are entries.
+#[derive(Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MappingKind {
+    /// Resolve as an environment variable.
+    #[default]
+    Env,
+    /// Resolve separately for a literal filesystem destination.
+    File,
+}
+
+impl<'de> Deserialize<'de> for MappingKind {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        // Enum deserialization also accepts object-shaped tags; require a string.
+        match String::deserialize(deserializer)?.as_str() {
+            "env" => Ok(Self::Env),
+            "file" => Ok(Self::File),
+            _ => Err(serde::de::Error::custom("expected env or file")),
+        }
+    }
+}
+
 /// A provider identifier and stored reference, or plaintext manual literal.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {
+    /// Mapping purpose, serialized explicitly even for legacy environment entries.
+    #[serde(default, rename = "type")]
+    pub kind: MappingKind,
     /// Case-sensitive provider identifier; unknown providers remain editable.
     pub source: String,
     /// Provider reference, trusted shell command, or plaintext manual literal.
     pub value: String,
 }
-/// Environment names mapped to entries in JSON insertion order.
+/// Environment names or literal file destinations in JSON insertion order.
 pub type Entries = IndexMap<String, Entry>;
 
 struct StrictEntries(Entries);
@@ -28,7 +55,7 @@ impl<'de> Deserialize<'de> for StrictEntries {
         impl<'de> serde::de::Visitor<'de> for Visitor {
             type Value = StrictEntries;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("an object of unique environment names")
+                f.write_str("an object of unique mapping keys")
             }
             fn visit_map<M: serde::de::MapAccess<'de>>(
                 self,
@@ -37,7 +64,7 @@ impl<'de> Deserialize<'de> for StrictEntries {
                 let mut entries = Entries::new();
                 while let Some((name, entry)) = map.next_entry::<String, Entry>()? {
                     if entries.insert(name, entry).is_some() {
-                        return Err(serde::de::Error::custom("duplicate environment name"));
+                        return Err(serde::de::Error::custom("duplicate mapping key"));
                     }
                 }
                 Ok(StrictEntries(entries))
@@ -53,6 +80,20 @@ pub fn valid_name(name: &str) -> bool {
     matches!(chars.next(), Some(c) if c == '_' || c.is_ascii_alphabetic())
         && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
+/// Whether a literal managed-file destination is nonempty and control-free.
+pub fn valid_destination(destination: &str) -> bool {
+    !destination.is_empty() && !destination.chars().any(char::is_control)
+}
+
+impl Entry {
+    fn valid_key(&self, key: &str) -> bool {
+        match self.kind {
+            MappingKind::Env => valid_name(key),
+            MappingKind::File => valid_destination(key),
+        }
+    }
+}
+
 /// Find the nearest config, checking visible before hidden names at each ancestor.
 /// A nonempty override is relative to cwd; traversal stops at home or root.
 /// With no match, return cwd/psst.json without creating it.
@@ -101,12 +142,12 @@ impl Drop for FileLock {
 pub struct Config {
     /// Chosen config path, also determining provider cwd.
     pub path: PathBuf,
-    /// Current entries; use save to validate and persist a replacement.
+    /// All mappings, independent of UI selection; save validates a replacement.
     pub entries: Entries,
     baseline: Option<Vec<u8>>,
 }
 impl Config {
-    /// Load a config up to 4 MiB, rejecting invalid schema, names, duplicates and NUL.
+    /// Load up to 4 MiB, rejecting invalid schema, keys, duplicates and NUL.
     /// Missing and zero-byte files are treated as empty without creating a file.
     pub fn load(path: PathBuf) -> Result<Self> {
         let baseline = read_optional(&path)?;
@@ -114,12 +155,12 @@ impl Config {
             None | Some([]) => Entries::new(),
             Some(bytes) => serde_json::from_slice::<StrictEntries>(bytes).map_err(|e| {
                 // Serde type errors can include literal values. Never echo them.
-                anyhow::anyhow!("Invalid config {} at line {}, column {} (expected unique environment names with string source/value entries)", path.display(), e.line(), e.column())
+                anyhow::anyhow!("Invalid config {} at line {}, column {} (expected unique mapping keys with env/file types and string source/value fields)", path.display(), e.line(), e.column())
             })?.0,
         };
         for (name, entry) in &entries {
-            if !valid_name(name) {
-                bail!("Invalid environment name in config: {name:?}");
+            if !entry.valid_key(name) {
+                bail!("Invalid environment name or file destination in config: {name:?}");
             }
             if entry.source.contains('\0') || entry.value.contains('\0') {
                 bail!("Config entry {name:?} contains a NUL byte");
@@ -151,7 +192,7 @@ impl Config {
         boundary: impl FnMut(WriteBoundary) -> Result<()>,
     ) -> Result<()> {
         for (name, entry) in &entries {
-            if !valid_name(name) || entry.source.contains('\0') || entry.value.contains('\0') {
+            if !entry.valid_key(name) || entry.source.contains('\0') || entry.value.contains('\0') {
                 bail!("Invalid name or NUL in entry");
             }
         }
@@ -232,7 +273,7 @@ pub enum WriteBoundary {
     FileSync,
     /// Before replacing the destination.
     Replace,
-    /// After replacement, before syncing its directory.
+    /// Before syncing a directory, including new ancestors before replacement.
     DirectorySync,
 }
 
@@ -371,6 +412,40 @@ mod tests {
     }
 
     #[test]
+    fn mixed_config_failures_track_replacement_and_preserve_both_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("psst.json");
+        let original = br#"{"TOKEN":{"source":"manual","value":"old"},"./TOKEN":{"type":"file","source":"unknown","value":"reference"}}"#;
+        for failure in [
+            WriteBoundary::Write,
+            WriteBoundary::FileSync,
+            WriteBoundary::Replace,
+            WriteBoundary::DirectorySync,
+        ] {
+            fs::write(&path, original).unwrap();
+            let mut config = Config::load(path.clone()).unwrap();
+            let before = config.entries.clone();
+            let mut after = before.clone();
+            after["TOKEN"].value = "new".into();
+            let error = config
+                .save_checked(after.clone(), |stage| {
+                    anyhow::ensure!(stage != failure, "Injected failure");
+                    Ok(())
+                })
+                .unwrap_err();
+            let changed = error.downcast_ref::<PersistenceError>().unwrap().changed;
+            assert_eq!(changed, failure == WriteBoundary::DirectorySync);
+            let loaded = Config::load(path.clone()).unwrap();
+            let expected = if changed { &after } else { &before };
+            assert!(config.entries == *expected);
+            assert!(loaded.entries == *expected);
+            assert_eq!(config.baseline, loaded.baseline);
+            assert!(!dir.path().join("TOKEN").exists());
+            config.save(expected.clone()).unwrap();
+        }
+    }
+
+    #[test]
     fn config_failed_replacement_keeps_loaded_entries_and_baseline() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("psst.json");
@@ -396,6 +471,7 @@ mod tests {
         let entries = Entries::from([(
             "KEY".into(),
             Entry {
+                kind: MappingKind::Env,
                 source: "bad\0source".into(),
                 value: "x".into(),
             },
@@ -432,6 +508,7 @@ mod tests {
             .save(Entries::from([(
                 "KEY".into(),
                 Entry {
+                    kind: MappingKind::Env,
                     source: "manual".into(),
                     value: "test-secret".into(),
                 },
@@ -480,6 +557,7 @@ mod tests {
         let entries = IndexMap::from([(
             "ABC".into(),
             Entry {
+                kind: MappingKind::Env,
                 source: "manual".into(),
                 value: "literal".into(),
             },

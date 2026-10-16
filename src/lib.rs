@@ -9,6 +9,8 @@ pub mod browser;
 pub mod cli;
 /// Ordered configuration discovery, validation and atomic persistence.
 pub mod config;
+/// Internal managed-file preflight, private staging, and conflict snapshots.
+pub mod materialization;
 /// Literal clipboard transfer and dotenv export.
 pub mod operations;
 /// Bounded subprocess capture and cancellation cleanup.

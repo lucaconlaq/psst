@@ -162,6 +162,7 @@ async fn author_recheck_worker() {
         let reference = result.unwrap();
         assert_eq!(reference, format!("id#{}", key.fingerprint()));
         let entry = Entry {
+            kind: psst::config::MappingKind::Env,
             source: "local-storage".into(),
             value: reference,
         };
@@ -176,6 +177,7 @@ async fn author_recheck_worker() {
             "SELECTED_VALUE"
         );
         let unqualified = Entry {
+            kind: psst::config::MappingKind::Env,
             source: "local-storage".into(),
             value: "id".into(),
         };

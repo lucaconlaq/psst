@@ -141,22 +141,27 @@ pub async fn fetch(entry: &Entry, dir: &Path) -> Result<Zeroizing<String>> {
     }
     Ok(value)
 }
-/// Resolve all entries concurrently, preserving config order and individual
-/// errors.
+/// Resolve environment entries only, concurrently and in configuration order.
+/// File mappings are never fetched by this environment operation.
 /// Provider subprocesses cannot depend on previously resolved secrets.
 pub async fn all(entries: &Entries, dir: &Path) -> Vec<(String, Result<Zeroizing<String>>)> {
     let operation = local_storage::Operation::default();
-    join_all(entries.iter().map(|(name, entry)| {
-        let operation = &operation;
-        async move {
-            let result = if entry.source == "local-storage" {
-                operation.fetch(&entry.value, dir).await
-            } else {
-                fetch(entry, dir).await
-            };
-            (name.clone(), result)
-        }
-    }))
+    join_all(
+        entries
+            .iter()
+            .filter(|(_, entry)| entry.kind == crate::config::MappingKind::Env)
+            .map(|(name, entry)| {
+                let operation = &operation;
+                async move {
+                    let result = if entry.source == "local-storage" {
+                        operation.fetch(&entry.value, dir).await
+                    } else {
+                        fetch(entry, dir).await
+                    };
+                    (name.clone(), result)
+                }
+            }),
+    )
     .await
 }
 fn scalar(value: &serde_json::Value) -> String {
@@ -231,6 +236,7 @@ mod tests {
         ] {
             let error = fetch(
                 &Entry {
+                    kind: crate::config::MappingKind::Env,
                     source: source.into(),
                     value: value.into(),
                 },
@@ -244,7 +250,7 @@ mod tests {
     #[tokio::test]
     async fn parallel_fetches_start_together() {
         let t = tempfile::tempdir().unwrap();
-        let entries: Entries = (0..4).map(|n| (format!("S{n}"), Entry { source: "shell".into(), value: format!("touch ready{n}; while [ $(find . -name 'ready*' | wc -l) -lt 4 ]; do sleep 0.01; done; printf done") })).collect();
+        let entries: Entries = (0..4).map(|n| (format!("S{n}"), Entry { kind: crate::config::MappingKind::Env, source: "shell".into(), value: format!("touch ready{n}; while [ $(find . -name 'ready*' | wc -l) -lt 4 ]; do sleep 0.01; done; printf done") })).collect();
         let results =
             tokio::time::timeout(std::time::Duration::from_secs(3), all(&entries, t.path()))
                 .await

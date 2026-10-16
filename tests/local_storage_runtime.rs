@@ -507,6 +507,7 @@ async fn operation_worker() {
         (
             name.into(),
             Entry {
+                kind: psst::config::MappingKind::Env,
                 source: source.into(),
                 value: value.into(),
             },

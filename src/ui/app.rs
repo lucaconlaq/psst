@@ -1,7 +1,7 @@
 use super::editor::{Creator, Editor};
 use crate::{
     browser::{self, Choice, Level, Target},
-    config::{Config, Entry},
+    config::{Config, Entry, MappingKind},
     operations, providers,
 };
 use anyhow::Result;
@@ -94,6 +94,9 @@ pub(super) enum Message {
 }
 pub(super) struct App {
     pub(super) config: Config,
+    pub(super) kind: MappingKind,
+    // Park navigation only; configuration always contains both kinds.
+    other_dashboard: (String, usize, TableState),
     pub(super) view: View,
     pub(super) selected: usize,
     pub(super) table: TableState,
@@ -118,6 +121,8 @@ impl App {
     pub(super) fn new(config: Config) -> Self {
         Self {
             config,
+            kind: MappingKind::Env,
+            other_dashboard: (String::new(), 0, TableState::default()),
             view: View::Main,
             selected: 0,
             table: TableState::default(),
@@ -139,13 +144,13 @@ impl App {
             busy_copy: false,
         }
     }
-    fn names(&self) -> Vec<String> {
+    pub(super) fn names(&self) -> Vec<String> {
         let query = self.query.to_lowercase();
         self.config
             .entries
-            .keys()
-            .filter(|n| n.to_lowercase().contains(&query))
-            .cloned()
+            .iter()
+            .filter(|(name, entry)| entry.kind == self.kind && name.to_lowercase().contains(&query))
+            .map(|(name, _)| name.clone())
             .collect()
     }
     pub(super) fn selected_name(&self) -> Option<String> {
@@ -292,9 +297,17 @@ impl App {
             return;
         };
         let mut entries = self.config.entries.clone();
-        if !crate::config::valid_name(&e.name) {
+        let valid = match e.kind {
+            MappingKind::Env => crate::config::valid_name(&e.name),
+            MappingKind::File => crate::config::valid_destination(&e.name),
+        };
+        if !valid {
             self.status(
-                "Use an environment name: letters, digits and _, starting with a letter or _.",
+                if e.kind == MappingKind::File {
+                    "Use a nonempty literal destination without control characters."
+                } else {
+                    "Use an environment name: letters, digits and _, starting with a letter or _."
+                },
                 true,
             );
             return;
@@ -312,7 +325,14 @@ impl App {
         match self.config.save(entries) {
             Ok(()) => {
                 self.main();
-                self.status("Saved securely.", false);
+                self.status(
+                    if self.kind == MappingKind::File {
+                        "File mapping saved. Run psst --write-files separately to write destinations."
+                    } else {
+                        "Saved securely."
+                    },
+                    false,
+                );
             }
             Err(e) => self.status(format!("{e:#}"), true),
         }
@@ -382,9 +402,19 @@ impl App {
         if c.busy || c.pending.is_some() {
             return;
         }
-        if c.return_browser.is_none() && !crate::config::valid_name(&c.editor.name) {
-            self.status("Invalid environment name.", true);
-            return;
+        if c.return_browser.is_none() {
+            let valid = match c.editor.kind {
+                MappingKind::Env => crate::config::valid_name(&c.editor.name),
+                MappingKind::File => crate::config::valid_destination(&c.editor.name),
+            };
+            if !valid {
+                let message = match c.editor.kind {
+                    MappingKind::Env => "Invalid environment name.",
+                    MappingKind::File => "Invalid destination.",
+                };
+                self.status(message, true);
+                return;
+            }
         }
         if c.return_browser.is_none()
             && c.editor.original.as_deref() != Some(&c.editor.name)
@@ -458,8 +488,11 @@ impl App {
         config_boundary: impl FnMut(crate::config::WriteBoundary) -> Result<()>,
         mut storage_boundary: impl FnMut(crate::config::WriteBoundary) -> Result<()>,
     ) {
-        let encrypted =
-            providers::get(&self.config.entries[name].source).is_some_and(|p| p.author().is_some());
+        let file = self.config.entries[name].kind == MappingKind::File;
+        let encrypted = !file
+            && providers::get(&self.config.entries[name].source)
+                .is_some_and(|p| p.author().is_some());
+        let removal = if file { None } else { removal };
         let mut entries = self.config.entries.clone();
         entries.shift_remove(name);
         let result = self.config.save_checked(entries, config_boundary);
@@ -491,7 +524,7 @@ impl App {
         }
         self.main();
         match removal {
-            None => self.status(if encrypted { format!("Deleted {name}; ciphertext kept.") } else { format!("Deleted {name}.") }, false),
+            None => self.status(if file { format!("Deleted {name} mapping; destination and provider contents kept.") } else if encrypted { format!("Deleted {name}; ciphertext kept.") } else { format!("Deleted {name}.") }, false),
             Some(Err(error)) => self.status(format!("Mapping removed; ciphertext kept: {error:#}"), true),
             Some(Ok(mut selected)) => match selected.remove(&mut storage_boundary) {
                 Ok(()) => self.status("Mapping and selected ciphertext removed. Other loaded references to it will fail safely.", false),
@@ -633,7 +666,7 @@ impl App {
                         }
                         let mut entries = self.config.entries.clone();
                         if let Some(original) = original && original != name { entries.shift_remove(&original); }
-                        entries.insert(name, Entry { source, value: reference });
+                        entries.insert(name, Entry { kind: self.kind, source, value: reference });
                         match self.config.save_checked(entries, boundary) {
                             Ok(()) => { self.main(); self.status("Saved encrypted value and configuration.", false); }
                             Err(error) => {
@@ -799,7 +832,9 @@ impl App {
         }
         if let Some(name) = self.delete.clone() {
             let entry = &self.config.entries[&name];
-            let author = providers::get(&entry.source).and_then(|p| p.author());
+            let author = (entry.kind == MappingKind::Env)
+                .then(|| providers::get(&entry.source).and_then(|p| p.author()))
+                .flatten();
             match key.code {
                 KeyCode::Tab if author.is_some() && !self.delete_busy => {
                     self.delete_remove = !self.delete_remove;
@@ -935,6 +970,7 @@ impl App {
                                 Some((
                                     reference.clone(),
                                     Entry {
+                                        kind: crate::config::MappingKind::Env,
                                         source: editor.source.clone(),
                                         value: reference.clone(),
                                     },
@@ -1242,6 +1278,21 @@ impl App {
         }
         match key.code {
             KeyCode::Esc => return true,
+            KeyCode::Tab => {
+                self.invalidate();
+                self.kind = match self.kind {
+                    MappingKind::Env => MappingKind::File,
+                    MappingKind::File => MappingKind::Env,
+                };
+                std::mem::swap(&mut self.query, &mut self.other_dashboard.0);
+                std::mem::swap(&mut self.selected, &mut self.other_dashboard.1);
+                std::mem::swap(&mut self.table, &mut self.other_dashboard.2);
+                tasks.cancel_stale(self.generation);
+                self.status(
+                    "Contents stay masked; reveal or copy resolves on request.",
+                    false,
+                );
+            }
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => self.selected = (self.selected + 1).min(self.names().len()),
             KeyCode::Home => self.selected = 0,
@@ -1312,13 +1363,25 @@ impl App {
         self.invalidate();
         self.view = View::Editor(Editor::new(
             None,
-            format!("SECRET_{next}"),
+            if self.kind == MappingKind::File {
+                String::new()
+            } else {
+                format!("SECRET_{next}")
+            },
             Entry {
+                kind: self.kind,
                 source: "manual".into(),
                 value: String::new(),
             },
         ));
-        self.status("New entry · nothing is saved until Ctrl+S.", false);
+        self.status(
+            if self.kind == MappingKind::File {
+                "New file mapping · Ctrl+S saves configuration only, not destination contents."
+            } else {
+                "New entry · nothing is saved until Ctrl+S."
+            },
+            false,
+        );
     }
     pub(super) fn paste(&mut self, text: String) {
         let text = Zeroizing::new(text);

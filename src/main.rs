@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use psst::{
     cli::{Args, HELP},
     config::{Config, discover},
-    operations, providers, ui,
+    materialization, operations, providers, ui,
 };
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
@@ -35,16 +35,24 @@ async fn run() -> Result<u8> {
         home.as_deref(),
         std::env::var_os("PSST_CONFIG").as_deref(),
     ))?;
-    if args.copy.is_none() && !args.write && args.command.is_empty() {
+    if args.copy.is_none() && !args.write && !args.write_files && args.command.is_empty() {
         ui::run(config).await?;
         return Ok(0);
     }
     let operation = async {
+        if args.write_files {
+            return Ok(if materialization::run(&config, args.yes).await? {
+                0
+            } else {
+                1
+            });
+        }
         if let Some(name) = args.copy {
             let name = name.to_str().context("Secret name is not UTF8")?;
             let entry = config
                 .entries
                 .get(name)
+                .filter(|entry| entry.kind == psst::config::MappingKind::Env)
                 .with_context(|| format!("Secret {name:?} not found"))?;
             let value = providers::fetch(entry, config.dir()).await?;
             operations::copy(&value).await?;
@@ -64,15 +72,17 @@ async fn run() -> Result<u8> {
         }
         if args.write {
             operations::write_env(&cwd.join(".env"), &results)?;
-            console::info(format_args!("Created .env (plaintext, permissions 0600)"));
+            console::info(format_args!(
+                "📝 Created .env (plaintext, permissions 0600)"
+            ));
             return Ok(0);
         }
         let count = results.iter().filter(|(_, r)| r.is_ok()).count();
         if count == 0 {
-            console::info(format_args!("No secrets injected"));
+            console::info(format_args!("💉 No secrets injected"));
         } else {
             console::info(format_args!(
-                "injected {count} secret{}",
+                "💉 injected {count} secret{}",
                 if count == 1 { "" } else { "s" }
             ));
         }

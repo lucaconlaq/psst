@@ -50,16 +50,89 @@ impl Fixture {
     }
 }
 #[test]
+fn environment_operations_never_fetch_export_or_materialize_files() {
+    let f = Fixture::new(json!({
+        "TOKEN": {"source":"manual", "value":"environment"},
+        "./TOKEN": {"type":"file", "source":"shell", "value":"touch file-fetch-marker; printf DO_NOT_EXPORT"},
+        "FILE_ONLY": {"type":"file", "source":"shell", "value":"touch file-fetch-marker; printf DO_NOT_EXPORT"},
+        "local-file": {"type":"file", "source":"local-storage", "value":"invalid reference"}
+    }));
+    for filename in ["psst.json", ".psst.json", "custom.json"] {
+        let path = f.temp.path().join(filename);
+        if path != f.config {
+            fs::rename(&f.config, &path).unwrap();
+        }
+        let caller = f.temp.path().join("caller");
+        fs::create_dir_all(&caller).unwrap();
+        let mut command = f.command();
+        command
+            .current_dir(&caller)
+            .env_remove("PSST_CONFIG")
+            .env_remove("FILE_ONLY");
+        if filename == "custom.json" {
+            command.env("PSST_CONFIG", &path);
+        }
+        command
+            .args([
+                "/bin/sh",
+                "-c",
+                "printf '%s|%s' \"$TOKEN\" \"${FILE_ONLY-unset}\"",
+            ])
+            .assert()
+            .success()
+            .stdout("environment|unset");
+        f.command()
+            .current_dir(&caller)
+            .env("PSST_CONFIG", &path)
+            .arg("--write")
+            .assert()
+            .success();
+        assert_eq!(
+            fs::read_to_string(caller.join(".env")).unwrap(),
+            "TOKEN=environment\n"
+        );
+        f.command()
+            .env("PSST_CONFIG", &path)
+            .args(["--copy", "FILE_ONLY"])
+            .assert()
+            .failure();
+        for destination in ["file-fetch-marker", "TOKEN", "FILE_ONLY", "local-file"] {
+            assert!(!f.temp.path().join(destination).exists());
+            assert!(!caller.join(destination).exists());
+        }
+        if path != f.config {
+            fs::rename(path, &f.config).unwrap();
+        }
+    }
+}
+
+#[test]
+fn mixed_configuration_keeps_local_storage_environment_failures_fatal() {
+    let f = Fixture::new(json!({
+        "ENV": {"source":"local-storage", "value":"invalid reference"},
+        "file": {"type":"file", "source":"shell", "value":"touch file-fetch-marker; printf contents"}
+    }));
+    f.command()
+        .args(["/bin/sh", "-c", "touch launched"])
+        .assert()
+        .failure();
+    f.command().arg("--write").assert().failure();
+    for path in ["launched", ".env", "file", "file-fetch-marker"] {
+        assert!(!f.temp.path().join(path).exists());
+    }
+}
+
+#[test]
 fn status_messages_use_legacy_wording_without_coloring_captured_output() {
     for (config, expected) in [
-        (json!({}), "No secrets injected\n"),
+        (json!({}), "💉 No secrets injected\n"),
         (
             json!({"A":{"source":"manual","value":"a"}}),
-            "injected 1 secret\n",
+            "💉 injected 1 secret\n",
         ),
         (
             json!({"A":{"source":"manual","value":"a"},"B":{"source":"manual","value":"b"}}),
-            "injected 2 secrets\n",
+            "💉 injected 2 secrets\n",
         ),
     ] {
         let f = Fixture::new(config);
@@ -83,7 +156,7 @@ fn status_messages_use_legacy_wording_without_coloring_captured_output() {
         .args(["/bin/sh", "-c", "exit 0"])
         .assert()
         .success()
-        .stderr("⚠️  psst: BAD: Unknown source \"missing\"\nNo secrets injected\n");
+        .stderr("⚠️  psst: BAD: Unknown source \"missing\"\n💉 No secrets injected\n");
 }
 #[test]
 fn overlay_partial_failures_argv_and_exit() {
@@ -300,7 +373,7 @@ fn export_is_private_ordered_and_escaped() {
         .assert()
         .success()
         .stdout("")
-        .stderr("Created .env (plaintext, permissions 0600)\n");
+        .stderr("📝 Created .env (plaintext, permissions 0600)\n");
     let path = caller.join(".env");
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("A=\"a\\n\\\"b\\\\c"));
