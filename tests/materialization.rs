@@ -323,12 +323,14 @@ async fn controlled_provider_fixtures() {
         &work.join(".psst").join(fake.key.filename()),
         include_bytes!("fixtures/local-storage-v1.json"),
     );
+    // Include headroom for successful multi-MiB output on slower CI runners.
+    // The intentional timeout command below exceeds this provider deadline.
     let output = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "provider_child", "--nocapture"])
         .env("PSST_PLAN_FIXTURE", &work)
         .env("PATH", &bin)
         .env("SSH_AUTH_SOCK", fake.socket())
-        .env("PSST_TIMEOUT", "1")
+        .env("PSST_TIMEOUT", "10")
         .env("TMPDIR", dir)
         .current_dir(dir)
         .output()
@@ -347,13 +349,15 @@ async fn controlled_provider_fixtures() {
 fn many_near_limit_files_use_private_disk_staging_with_bounded_memory() {
     let _fixture = PROVIDER_FIXTURES.blocking_lock();
     let root = support::tempdir();
+    // Both large batches hash and sync every file; this is a memory/cleanup
+    // test, not a throughput benchmark.
     let mut command = assert_cmd::Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "large_batch_child", "--nocapture"])
         .env("PSST_LARGE_BATCH_FIXTURE", root.path())
         .env("TMPDIR", root.path())
         .env_remove("SSH_AUTH_SOCK")
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(180))
         .assert()
         .success();
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
@@ -371,7 +375,7 @@ async fn large_batch_child() {
     fs::create_dir(&dir).unwrap();
     let mut cfg = config(&dir);
     let size = 4 * 1024 * 1024 - 128;
-    let value = format!("head -c {size} /dev/zero | tr '\\000' x");
+    let value = format!("head -c {size} /dev/zero | LC_ALL=C tr '\\000' x");
     cfg.entries
         .insert("warmup".into(), mapping("shell", &value));
     drop(plan(&cfg).await.unwrap());
@@ -446,7 +450,7 @@ async fn large_batch_child() {
         mapping("shell", "printf ready > waiting; exec sleep 60"),
     );
     let mut pending = Box::pin(plan(&cfg));
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(Duration::from_secs(90), async {
         loop {
             tokio::select! {
                 result = &mut pending => panic!("provider unexpectedly completed: {}", result.is_ok()),
@@ -509,7 +513,7 @@ async fn provider_child() {
         ("vault", "path#nul"),
         ("shell", "printf '\\377'"),
         ("shell", "printf '\\000'"),
-        ("shell", "sleep 5"),
+        ("shell", "sleep 30"),
         ("local-storage", "absent"),
     ];
     for (index, (source, value)) in failures.iter().enumerate() {
@@ -640,12 +644,12 @@ async fn provider_child() {
         let exact = if source == "manual" {
             "x".repeat(4 * 1024 * 1024)
         } else {
-            "head -c 4194304 /dev/zero | tr '\\000' x".into()
+            "head -c 4194304 /dev/zero | LC_ALL=C tr '\\000' x".into()
         };
         let over = if source == "manual" {
             "x".repeat(4 * 1024 * 1024 + 1)
         } else {
-            "head -c 4194305 /dev/zero | tr '\\000' x".into()
+            "head -c 4194305 /dev/zero | LC_ALL=C tr '\\000' x".into()
         };
         cfg.entries.insert("exact".into(), mapping(source, &exact));
         cfg.entries.insert("over".into(), mapping(source, &over));
@@ -664,7 +668,7 @@ async fn provider_child() {
     for index in 0..8 {
         many.entries.insert(
             format!("large-{index}"),
-            mapping("shell", "head -c 4194304 /dev/zero | tr '\\000' x"),
+            mapping("shell", "head -c 4194304 /dev/zero | LC_ALL=C tr '\\000' x"),
         );
     }
     let planned = plan(&many).await.unwrap();
