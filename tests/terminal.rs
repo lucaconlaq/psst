@@ -357,7 +357,9 @@ fn managed_file_ctrl_c_during_subprocess_resolution_and_consent() {
         assert_eq!(stages.len(), 1);
         assert_eq!(
             fs::read_dir(&stages[0]).unwrap().count(),
-            if consent { 2 } else { 1 }
+            if consent { 2 } else { 1 },
+            "{}",
+            pty.history
         );
         cancel_materialization(&mut pty, root.path());
         assert!(!root.path().join("first").exists());
@@ -503,7 +505,8 @@ fn managed_file_batch_consent_approval_refusal_and_stale_targets() {
         }
         if approve {
             assert_eq!(
-                fs::read(root.path().join("new/deep/one")).unwrap(),
+                fs::read(root.path().join("new/deep/one"))
+                    .unwrap_or_else(|error| panic!("{error}: {}", pty.history)),
                 b"NEW_PRIVATE"
             );
             assert_eq!(
