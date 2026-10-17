@@ -1,9 +1,3 @@
-# Initial baseline
-
-Source: retrospective code-to-spec reconstruction of [commit dc70795](https://github.com/lucaconlaq/psst/tree/dc70795a7e6b16aa85569a4d46a28e04d2005b78), package version **2.0.0-alpha.3**, immediately before [spec 01 was introduced](https://github.com/lucaconlaq/psst/commit/8cea561118031e93ed22c44c632dd62a82ad994f). There is no source idea: this document records already implemented behavior rather than a newly agreed design.
-
-**Scope:** historical starting requirements, reconstructed from the Rust implementation, tests, README, and CI configuration. The main contract is frozen at the source commit; the explicitly labeled maintenance section records shared fixes implemented afterward but before spec 02, without importing spec 01's feature scope. This is not a claim of fresh acceptance testing or release approval. Later specs supersede this baseline where they explicitly change it, notably [local storage and unified TUI controls](01-local-storage.md) and [managed files](02-managed-files.md).
-
 ## Problem Statement
 
 Developers need to associate environment names with secrets from different sources, maintain those associations locally, and use the resolved secrets without repeatedly retrieving and entering them by hand. They also need interactive inspection, clipboard access, and an export for tools that consume dotenv files.
@@ -171,17 +165,7 @@ This section inventories existing verification seams and the behavior they cover
 
 ## Out of Scope
 
-- Encrypted local storage, SSH-agent signing/decryption, local storage IDs, and encrypted-value authoring or removal; these belong to spec 01.
-- Managed files, filesystem materialization, file-destination configuration, and managed-file workflows; these belong to spec 02.
 - Windows support, external provider plugins, a stable provider extension API, or a standalone provider-management CLI.
 - Provider-side creation/update/deletion, authentication-token management, secret dependency ordering, automatic retries, or a persistent resolved-secret cache.
 - Sandboxing trusted shell commands, guaranteeing complete memory erasure, encrypting manual configuration or exports, or automatically clearing the clipboard.
 - A completed installation workflow, npm/crates.io publishing, or a claim that the Rust baseline reproduces every incidental behavior of all earlier JavaScript/TypeScript versions.
-
-## Further Notes
-
-- The primary historical boundary is the parent of the commit that first created spec 01, not today's code with later features removed. The initial Rust rewrite and all runtime fixes before that boundary are included; later shared maintenance is separately sourced above.
-- Completeness audit: all **51 tracked files** at that boundary were accounted for. All **15 runtime files and seven test/fixture files** were read in full; manifests, release configuration, README, and domain/architecture documentation were checked for additional product requirements. The remaining assets, dependency inventory, and development/agent workflows introduce no additional product capabilities. Intervening commits up to spec 02 were also checked for shared maintenance outside spec 01's feature scope.
-- Later specs replace the legacy TUI controls and introduce exact-text/NUL rules for their specified editing flows. Spec 01 adds fail-stop resolution and queue-inclusive agent deadlines for local storage; it does not change baseline providers' best-effort policy, consumer-specific empty-value handling, or queued 1Password-read deadlines. Apply each later contract only within its stated scope.
-- Positional JSON entries, extra-`#` parsing, padding-only OTP seeds, Terraform path handling, incomplete rendering sanitization and secret-buffer cleanup, and browsing's secret-bearing external responses are historical compatibility observations or limitations, not newly approved security guarantees or recommendations. Recording them neither mandates preserving defects nor authorizes code changes.
-- Project-agent workflows, editor settings, and planning documents are development tooling, not additional product capabilities. This reconstruction creates no implementation tickets and authorizes no code changes.
