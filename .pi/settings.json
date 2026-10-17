@@ -6,21 +6,26 @@
   ],
   "footer": {
     "preset": "compact",
-    "separator": "powerline-thin",
+    "separator": "pipe",
     "segments": [
       "path",
       "git",
       "model",
       "thinking",
       "context_pct",
-      "custom:agents"
+      "custom:agents",
+      "custom:wumpa"
     ],
     "customItems": [
       {
         "id": "agents",
         "statusKey": "subagent-count",
-        "prefix": "",
         "color": "accent"
+      },
+      {
+        "id": "wumpa",
+        "statusKey": "wumpa-session",
+        "color": "#00afaf"
       }
     ]
   }

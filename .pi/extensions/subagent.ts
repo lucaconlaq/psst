@@ -17,7 +17,7 @@ export default function (pi: ExtensionAPI) {
 
 	function updateStatus() {
 		const running = [...jobs.values()].filter((job) => job.snapshot().state === "running").length;
-		ui?.setStatus("subagent-count", `subagents:${running}`);
+		ui?.setStatus("subagent-count", ` subagents: ${running}`);
 	}
 
 	pi.on("session_start", (_event, ctx) => {

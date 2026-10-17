@@ -3,6 +3,7 @@ op = "2.30.3"
 vault = "1.19.1"
 pi = "latest"
 rust = { version = "1.88.0", components = ["rust-src", "rust-analyzer"] }
+node = "latest"
 
 [tool_alias]
 pi = "npm:@earendil-works/pi-coding-agent"
