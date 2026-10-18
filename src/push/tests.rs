@@ -13,6 +13,12 @@ mod agent {
     include!("../../tests/support/agent.rs");
 }
 
+fn tempdir() -> tempfile::TempDir {
+    // Push rejects symlinked ancestors, including macOS temporary aliases.
+    let root = std::env::temp_dir().canonicalize().unwrap();
+    tempfile::tempdir_in(root).unwrap()
+}
+
 fn configuration(root: &Path, names: &[&str]) -> Config {
     let mut config = Config::load(root.join("custom.json")).unwrap();
     for name in names {
@@ -32,7 +38,7 @@ fn configuration(root: &Path, names: &[&str]) -> Config {
 
 #[tokio::test]
 async fn latest_values_are_overwritten_and_unrelated_mappings_preserved_in_one_save() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let config = configuration(root.path(), &["one", "two"]);
     let mut plan = Plan::build(&config).await;
     let mut latest = Config::load(config.path.clone()).unwrap();
@@ -77,7 +83,7 @@ async fn latest_values_are_overwritten_and_unrelated_mappings_preserved_in_one_s
 #[tokio::test]
 async fn input_identity_contents_ancestors_and_protection_are_rechecked_independently() {
     for mutation in 0..6 {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         fs::create_dir(root.path().join("parent")).unwrap();
         let config = configuration(root.path(), &["parent/one", "two"]);
         let mut plan = Plan::build(&config).await;
@@ -122,7 +128,7 @@ async fn input_identity_contents_ancestors_and_protection_are_rechecked_independ
 async fn write_and_sync_mutations_rebuild_the_group_at_final_replacement() {
     for boundary in [WriteBoundary::Write, WriteBoundary::FileSync] {
         for mutation in 0..5 {
-            let root = tempfile::tempdir().unwrap();
+            let root = tempdir();
             fs::create_dir(root.path().join("parent")).unwrap();
             let config = configuration(root.path(), &["parent/one", "two"]);
             let mut plan = Plan::build(&config).await;
@@ -186,7 +192,7 @@ async fn write_and_sync_mutations_rebuild_the_group_at_final_replacement() {
 
 #[tokio::test]
 async fn final_mutations_can_exclude_the_entire_group_without_replacement() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let config = configuration(root.path(), &["one", "two"]);
     let original = fs::read(&config.path).unwrap();
     let mut plan = Plan::build(&config).await;
@@ -210,7 +216,7 @@ async fn final_mutations_can_exclude_the_entire_group_without_replacement() {
 #[tokio::test]
 async fn dangling_storage_entries_do_not_block_unrelated_saves() {
     for timing in 0..3 {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let config = configuration(root.path(), &["one", "two"]);
         fs::create_dir(root.path().join(".psst")).unwrap();
         let dangling = root.path().join(".psst/dangling");
@@ -249,7 +255,7 @@ async fn dangling_storage_entries_do_not_block_unrelated_saves() {
 
 #[tokio::test]
 async fn unresolvable_storage_aliases_still_fail_closed() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let config = configuration(root.path(), &["one"]);
     fs::create_dir(root.path().join(".psst")).unwrap();
     let alias = root.path().join(".psst/loop");
@@ -262,7 +268,7 @@ async fn unresolvable_storage_aliases_still_fail_closed() {
 #[tokio::test]
 async fn removed_and_retargeted_mappings_fail_without_rejecting_other_files() {
     for mutation in 0..3 {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let config = configuration(root.path(), &["one", "two"]);
         let mut plan = Plan::build(&config).await;
         let mut latest = Config::load(config.path.clone()).unwrap();
@@ -288,7 +294,7 @@ async fn grouped_persistence_failures_distinguish_replacement_and_clear_owned_pl
         WriteBoundary::Replace,
         WriteBoundary::DirectorySync,
     ] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let config = configuration(root.path(), &["one", "two"]);
         let mut plan = Plan::build(&config).await;
         plan.persist(&config, |stage| {
@@ -321,7 +327,7 @@ async fn grouped_persistence_failures_distinguish_replacement_and_clear_owned_pl
 #[tokio::test]
 async fn final_conflicts_and_lock_contention_never_clobber_competing_writes() {
     for contention in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let config = configuration(root.path(), &["one", "two"]);
         let mut plan = Plan::build(&config).await;
         let lock = OpenOptions::new()
@@ -352,7 +358,7 @@ async fn final_conflicts_and_lock_contention_never_clobber_competing_writes() {
 #[tokio::test]
 async fn unsafe_configuration_or_lock_paths_fail_closed() {
     for mutation in 0..3 {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempdir();
         let config = configuration(root.path(), &["one"]);
         let original = fs::read(&config.path).unwrap();
         let mut plan = Plan::build(&config).await;
@@ -378,7 +384,7 @@ async fn unsafe_configuration_or_lock_paths_fail_closed() {
 
 #[tokio::test]
 async fn persisted_format_limit_is_enforced_before_writing() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let config = configuration(root.path(), &["one"]);
     // JSON escaping makes a valid input exceed the persisted configuration cap.
     fs::write(root.path().join("one"), vec![b'\n'; INPUT_LIMIT]).unwrap();
@@ -397,7 +403,7 @@ async fn persisted_format_limit_is_enforced_before_writing() {
 #[tokio::test]
 async fn cancellation_drops_owned_zeroizing_snapshots_before_any_persistence() {
     use futures::FutureExt;
-    let root = tempfile::tempdir().unwrap();
+    let root = tempdir();
     let config = configuration(root.path(), &["one", "two"]);
     let original = fs::read(&config.path).unwrap();
     let plan = Plan::build(&config).await;
