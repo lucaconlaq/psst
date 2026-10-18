@@ -207,6 +207,9 @@ async fn normalized_pull_is_not_raw_unchanged_detection_and_empty_pull_still_fai
         let root = support::tempdir();
         let root = root.path();
         fixture(root, json!({"one":mapping("op://Vault/Note/notesPlain")}));
+        // Pull requires an already-identical destination to be private,
+        // independently of the runner's umask.
+        fs::set_permissions(root.join("one"), fs::Permissions::from_mode(0o600)).unwrap();
         let mut value = item();
         value["fields"][0]["value"] = json!(raw);
         write_json(root, "item.json", &value);
@@ -222,7 +225,7 @@ async fn normalized_pull_is_not_raw_unchanged_detection_and_empty_pull_still_fai
             assert!(!pulled.status.success());
             assert!(report(&pulled).contains("failed"));
         } else {
-            assert!(pulled.status.success());
+            assert!(pulled.status.success(), "{}", report(&pulled));
             assert_eq!(fs::read(root.join("one")).unwrap(), b"NEW_PRIVATE");
             let output = push(root).await;
             assert!(output.status.success(), "{}", report(&output));
