@@ -2,11 +2,9 @@ use anyhow::{Context, Result};
 use psst::{
     cli::{Args, HELP},
     config::{Config, discover},
-    materialization, operations, providers, ui,
+    console, materialization, operations, providers, push, ui,
 };
 use std::{ffi::OsString, path::PathBuf, process::ExitCode};
-
-mod console;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -35,12 +33,24 @@ async fn run() -> Result<u8> {
         home.as_deref(),
         std::env::var_os("PSST_CONFIG").as_deref(),
     ))?;
-    if args.copy.is_none() && !args.write && !args.write_files && args.command.is_empty() {
+    if args.copy.is_none()
+        && !args.write
+        && !args.files_pull
+        && !args.files_push
+        && args.command.is_empty()
+    {
         ui::run(config).await?;
         return Ok(0);
     }
     let operation = async {
-        if args.write_files {
+        if args.files_push {
+            return Ok(if push::run(&config, args.yes).await? {
+                0
+            } else {
+                1
+            });
+        }
+        if args.files_pull {
             return Ok(if materialization::run(&config, args.yes).await? {
                 0
             } else {
@@ -93,8 +103,14 @@ async fn run() -> Result<u8> {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             result = operation => result,
-            _ = tokio::signal::ctrl_c() => Ok(130),
-            _ = term.recv() => Ok(143),
+            _ = tokio::signal::ctrl_c() => {
+                if args.files_push { console::warn(format_args!("Push cancelled; unfinished files failed; completed writes, if any, remain.")); }
+                Ok(130)
+            },
+            _ = term.recv() => {
+                if args.files_push { console::warn(format_args!("Push cancelled; unfinished files failed; completed writes, if any, remain.")); }
+                Ok(143)
+            },
         }
     }
     #[cfg(not(unix))]

@@ -78,7 +78,8 @@ impl Pty {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin!("psst"));
         command
             .args(args)
-            .env_remove("SSH_AUTH_SOCK")
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("PSST_CONFIG", config)
             .env("PSST_TIMEOUT", timeout.to_string())
             .env("TERM", "xterm-256color")
@@ -295,6 +296,371 @@ fn assert_materialization_cleanup(root: &Path) {
     }
 }
 
+#[test]
+fn push_terminal_approval_refusal_latest_state_and_cancellation() {
+    for action in ["approve", "default-no", "refuse", "cancel"] {
+        let root = support::tempdir();
+        let config = root.path().join("custom.json");
+        for name in ["one", "two"] {
+            fs::write(root.path().join(name), "NEW_PRIVATE").unwrap();
+        }
+        let original = serde_json::json!({
+            "one":{"type":"file", "source":"manual", "value":"OLD_PRIVATE"},
+            "two":{"type":"file", "source":"manual", "value":"OLD_PRIVATE"}
+        })
+        .to_string();
+        fs::write(&config, &original).unwrap();
+        let mut pty = Pty::start_args(&config, None, None, 30, &["--files-push"]);
+        pty.wait_text("Save all? [y/N]");
+        assert_eq!(fs::read_to_string(&config).unwrap(), original);
+        assert!(!root.path().join("custom.json.lock").exists());
+        if action == "approve" {
+            let mut latest: serde_json::Value = serde_json::from_str(&original).unwrap();
+            latest["one"]["value"] = "LATEST_PRIVATE".into();
+            latest["ENV"] = serde_json::json!({"source":"manual", "value":"ENV_PRIVATE"});
+            fs::write(&config, latest.to_string()).unwrap();
+            fs::write(root.path().join("two"), "CHANGED_PRIVATE").unwrap();
+            pty.send(b"yes\n");
+        } else if action == "cancel" {
+            pty.send(b"\x03");
+        } else if action == "refuse" {
+            pty.send(b"n\n");
+        } else {
+            pty.send(b"\n");
+        }
+        let start = Instant::now();
+        loop {
+            pty.read();
+            if let Some(status) = pty.child.try_wait().unwrap() {
+                assert!(!status.success());
+                if action == "cancel" {
+                    assert_eq!(status.code(), Some(130));
+                }
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "{}", pty.history);
+        }
+        while pty.read() > 0 {}
+        assert_eq!(pty.history.matches("Push local → provider:").count(), 1);
+        assert_eq!(pty.history.matches("Save all? [y/N]").count(), 1);
+        assert!(!pty.history.contains("PRIVATE"));
+        if action == "approve" {
+            let latest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            assert_eq!(latest["one"]["value"], "NEW_PRIVATE");
+            assert_eq!(latest["two"]["value"], "OLD_PRIVATE");
+            assert_eq!(latest["ENV"]["value"], "ENV_PRIVATE");
+            assert!(pty.history.contains("one: saved"));
+            assert!(pty.history.contains("two: failed"));
+        } else {
+            assert_eq!(fs::read_to_string(&config).unwrap(), original);
+            assert!(pty.history.contains("one: failed"));
+            assert!(pty.history.contains("two: failed"));
+        }
+        assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("psst-files-")
+        }));
+        assert_eq!(attrs(&pty.master).c_lflag, pty.before.c_lflag);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_push_terminal_approval_is_once_before_all_writes_and_cancellation_is_truthful() {
+    use psst::providers::local_storage::StoredKey;
+    use serde_json::json;
+
+    for action in ["approve", "default-no", "cancel"] {
+        let fake = support::agent::FakeAgent::new().await;
+        let root = support::tempdir();
+        let root = root.path();
+        let config = root.join("custom.json");
+        let bin = root.join("tools");
+        fs::create_dir(&bin).unwrap();
+        let executable = bin.join("op");
+        fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+cd '{}'
+printf '%s\n' "$*" >> argv.log
+case "$1 $2" in
+  'vault list') printf '%s' '[{{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaa","name":"Vault"}}]' ;;
+  'item list') printf '%s' '[{{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbb","title":"Note"}}]' ;;
+  'item get') cat item.json ;;
+  'item edit') cat > captured.json; cat captured.json ;;
+  *) exit 2 ;;
+esac
+"#,
+                root.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut item = json!({
+            "id":"bbbbbbbbbbbbbbbbbbbbbbbbbb", "title":"Note", "version":3,
+            "vault":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaa", "name":"Vault"},
+            "category":"SECURE_NOTE", "tags":["original"],
+            "fields":[{"id":"notesPlain", "type":"STRING", "label":"notesPlain", "purpose":"NOTES", "value":"OLD_PRIVATE"}]
+        });
+        fs::write(root.join("item.json"), item.to_string()).unwrap();
+        StoredKey::load(root, fake.key.clone())
+            .unwrap()
+            .set(&fake.client, "id", "OLD_PRIVATE")
+            .await
+            .unwrap();
+        let storage = root.join(".psst").join(fake.key.filename());
+        let before_storage = fs::read(&storage).unwrap();
+        for name in ["encrypted", "remote", "manual"] {
+            fs::write(root.join(name), "NEW_PRIVATE").unwrap();
+        }
+        let original = json!({
+            "ENV":{"source":"manual", "value":"ENV_PRIVATE"},
+            "encrypted":{"type":"file", "source":"local-storage", "value":"id"},
+            "remote":{"type":"file", "source":"op", "value":"op://Vault/Note/notesPlain"},
+            "manual":{"type":"file", "source":"manual", "value":"OLD_PRIVATE"}
+        })
+        .to_string();
+        fs::write(&config, &original).unwrap();
+        let mut pty = Pty::start_args(
+            &config,
+            Some(&bin),
+            Some(&fake.socket()),
+            5,
+            &["--files-push"],
+        );
+        pty.wait_text("Save all? [y/N]");
+        assert_eq!(fs::read(&storage).unwrap(), before_storage);
+        assert_eq!(fs::read_to_string(&config).unwrap(), original);
+        assert!(!root.join("captured.json").exists());
+        for source in ["[manual]", "[local-storage]", "[op]"] {
+            assert!(pty.history.contains(source), "{}", pty.history);
+        }
+        if action == "approve" {
+            // Approval overwrites latest intended values, preserving unrelated
+            // mappings, encrypted IDs and recognized remote metadata.
+            let mut latest: serde_json::Value = serde_json::from_str(&original).unwrap();
+            latest["manual"]["value"] = json!("LATEST_PRIVATE");
+            latest["ADDED"] = json!({"source":"manual", "value":"KEEP_PRIVATE"});
+            fs::write(&config, latest.to_string()).unwrap();
+            let mut stored = StoredKey::load(root, fake.key.clone()).unwrap();
+            stored
+                .set(&fake.client, "id", "LATEST_PRIVATE")
+                .await
+                .unwrap();
+            stored
+                .set(&fake.client, "unrelated", "KEEP_PRIVATE")
+                .await
+                .unwrap();
+            item["fields"][0]["value"] = json!("LATEST_PRIVATE");
+            item["tags"] = json!(["latest"]);
+            fs::write(root.join("item.json"), item.to_string()).unwrap();
+            pty.send(b"y\n");
+        } else if action == "cancel" {
+            pty.send(b"\x03");
+        } else {
+            pty.send(b"\n");
+        }
+        let started = Instant::now();
+        let status = loop {
+            pty.read();
+            if let Some(status) = pty.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{}",
+                pty.history
+            );
+        };
+        while pty.read() > 0 {}
+        assert_eq!(status.success(), action == "approve", "{}", pty.history);
+        assert_eq!(pty.history.matches("Save all? [y/N]").count(), 1);
+        assert_eq!(pty.history.matches("Push local → provider:").count(), 1);
+        assert!(!pty.history.contains("PRIVATE"));
+        assert!(
+            !fs::read_to_string(root.join("argv.log"))
+                .unwrap()
+                .contains("PRIVATE")
+        );
+        if action == "approve" {
+            assert_eq!(pty.history.matches(": saved").count(), 3, "{}", pty.history);
+            let latest: serde_json::Value =
+                serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+            assert_eq!(latest["manual"]["value"], "NEW_PRIVATE");
+            assert_eq!(latest["ENV"]["value"], "ENV_PRIVATE");
+            assert_eq!(latest["ADDED"]["value"], "KEEP_PRIVATE");
+            let captured: serde_json::Value =
+                serde_json::from_slice(&fs::read(root.join("captured.json")).unwrap()).unwrap();
+            assert_eq!(captured["fields"][0]["value"], "NEW_PRIVATE");
+            assert_eq!(captured["tags"], json!(["latest"]));
+            let stored = StoredKey::load(root, fake.key.clone()).unwrap();
+            for (id, expected) in [("id", "NEW_PRIVATE"), ("unrelated", "KEEP_PRIVATE")] {
+                let record = stored
+                    .records()
+                    .iter()
+                    .find(|record| record.id == id)
+                    .unwrap();
+                assert_eq!(
+                    &*record.decrypt(&fake.client, &fake.key, id).await.unwrap(),
+                    expected
+                );
+            }
+        } else {
+            assert_eq!(
+                pty.history.matches(": failed:").count(),
+                3,
+                "{}",
+                pty.history
+            );
+            assert_eq!(fs::read_to_string(&config).unwrap(), original);
+            assert_eq!(fs::read(&storage).unwrap(), before_storage);
+            assert!(!root.join("captured.json").exists());
+            assert!(!pty.history.contains("uncertain") && !pty.history.contains("rolled back"));
+        }
+        for name in ["encrypted", "remote", "manual"] {
+            assert_eq!(fs::read_to_string(root.join(name)).unwrap(), "NEW_PRIVATE");
+        }
+        assert_eq!(attrs(&pty.master).c_lflag, pty.before.c_lflag);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_push_approval_latest_overwrite_preservation_and_refusal() {
+    use psst::providers::local_storage::StoredKey;
+
+    for action in [
+        "approve",
+        "default-no",
+        "refuse",
+        "input",
+        "retarget",
+        "removed",
+        "unsafe",
+    ] {
+        let fake = support::agent::FakeAgent::with_seeds(&[7, 8]).await;
+        let root = support::tempdir();
+        let root = root.path();
+        StoredKey::load(root, fake.key.clone())
+            .unwrap()
+            .set(&fake.client, "id", "OLD_PRIVATE")
+            .await
+            .unwrap();
+        let path = root.join(".psst").join(fake.key.filename());
+        let before = fs::read(&path).unwrap();
+        fs::write(root.join("one"), "NEW_PRIVATE").unwrap();
+        let config = root.join("custom.json");
+        let original =
+            serde_json::json!({"one":{"type":"file", "source":"local-storage", "value":"id"}});
+        fs::write(&config, original.to_string()).unwrap();
+        let mut pty = Pty::start_args(&config, None, Some(&fake.socket()), 5, &["--files-push"]);
+        pty.wait_text("Save all? [y/N]");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(pty.history.contains("[local-storage]"));
+        assert!(
+            pty.history
+                .contains("Other references may change; only this config was checked.")
+        );
+        let mut latest = original.clone();
+        if action == "approve" {
+            // Changed values are authorized overwrites, not stale conflicts.
+            let mut stored = StoredKey::load(root, fake.key.clone()).unwrap();
+            stored
+                .set(&fake.client, "id", "CONCURRENT_PRIVATE")
+                .await
+                .unwrap();
+            stored
+                .set(&fake.client, "unrelated", "KEEP_PRIVATE")
+                .await
+                .unwrap();
+            let other = fake.client.identities().await.unwrap().remove(1);
+            StoredKey::load(root, other.clone())
+                .unwrap()
+                .set(&fake.client, "id", "OTHER_PRIVATE")
+                .await
+                .unwrap();
+            // The unqualified mapping would now be ambiguous. Qualifying the
+            // approved same target is allowed; changing the target is not.
+            latest["one"]["value"] = format!("id#{}", fake.key.fingerprint()).into();
+            latest["ENV"] = serde_json::json!({"source":"manual", "value":"ENV_PRIVATE"});
+            latest["added"] = serde_json::json!({"source":"local-storage", "value":"unrelated"});
+            fs::write(&config, latest.to_string()).unwrap();
+        } else if action == "input" {
+            fs::write(root.join("one"), "CHANGED_PRIVATE").unwrap();
+        } else if action == "retarget" {
+            latest["one"]["value"] = "missing".into();
+            fs::write(&config, latest.to_string()).unwrap();
+        } else if action == "removed" {
+            latest.as_object_mut().unwrap().remove("one");
+            fs::write(&config, latest.to_string()).unwrap();
+        } else if action == "unsafe" {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        pty.send(match action {
+            "default-no" => b"\n",
+            "refuse" => b"n\n",
+            _ => b"y\n",
+        });
+        let started = Instant::now();
+        loop {
+            pty.read();
+            if let Some(status) = pty.child.try_wait().unwrap() {
+                assert_eq!(
+                    status.success(),
+                    action == "approve",
+                    "{action}: {}",
+                    pty.history
+                );
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{}",
+                pty.history
+            );
+        }
+        while pty.read() > 0 {}
+        assert!(!pty.history.contains("PRIVATE"));
+        assert_eq!(pty.history.matches("Save all? [y/N]").count(), 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&config).unwrap()).unwrap(),
+            latest
+        );
+        if action == "approve" {
+            let stored = StoredKey::load(root, fake.key.clone()).unwrap();
+            for (id, expected) in [("id", "NEW_PRIVATE"), ("unrelated", "KEEP_PRIVATE")] {
+                let actual = stored
+                    .records()
+                    .iter()
+                    .find(|record| record.id == id)
+                    .unwrap()
+                    .decrypt(&fake.client, &fake.key, id)
+                    .await
+                    .unwrap();
+                assert_eq!(&*actual, expected);
+            }
+            let other = fake.client.identities().await.unwrap().remove(1);
+            let other_stored = StoredKey::load(root, other.clone()).unwrap();
+            assert_eq!(
+                &*other_stored.records()[0]
+                    .decrypt(&fake.client, &other, "id")
+                    .await
+                    .unwrap(),
+                "OTHER_PRIVATE"
+            );
+            assert!(pty.history.contains("one: saved"));
+        } else {
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert!(pty.history.contains("one: failed"));
+        }
+        assert_materialization_cleanup(root);
+        assert_eq!(attrs(&pty.master).c_lflag, pty.before.c_lflag);
+    }
+}
+
 fn cancel_materialization(pty: &mut Pty, root: &Path) {
     pty.send(b"\x03");
     let start = Instant::now();
@@ -337,7 +703,7 @@ fn managed_file_ctrl_c_during_subprocess_resolution_and_consent() {
             .to_string(),
         )
         .unwrap();
-        let mut pty = Pty::start_args(&config, None, None, 30, &["--write-files"]);
+        let mut pty = Pty::start_args(&config, None, None, 30, &["--files-pull"]);
         if consent {
             pty.wait_text("Replace all? [y/N]");
         } else {
@@ -415,7 +781,7 @@ async fn managed_file_ctrl_c_during_agent_signing_closes_socket_and_staging() {
         .to_string(),
     )
     .unwrap();
-    let mut pty = Pty::start_args(&config, None, Some(&agent.socket()), 30, &["--write-files"]);
+    let mut pty = Pty::start_args(&config, None, Some(&agent.socket()), 30, &["--files-pull"]);
     agent.requested().await;
     assert_eq!(agent.signs(), 1);
     cancel_materialization(&mut pty, root.path());
@@ -440,6 +806,10 @@ async fn managed_file_ctrl_c_during_agent_signing_closes_socket_and_staging() {
 
 #[test]
 fn managed_file_batch_consent_approval_refusal_and_stale_targets() {
+    managed_file_batch_consent("--files-pull");
+}
+
+fn managed_file_batch_consent(flag: &str) {
     for (answer, approve, mutate) in [
         (b"y\n".as_slice(), true, false),
         (b"n\n", false, false),
@@ -468,7 +838,7 @@ fn managed_file_batch_consent_approval_refusal_and_stale_targets() {
             .to_string(),
         )
         .unwrap();
-        let mut pty = Pty::start_args(&config, None, None, 30, &["--write-files"]);
+        let mut pty = Pty::start_args(&config, None, None, 30, &[flag]);
         pty.wait_text("Replace all? [y/N]");
         assert!(!root.path().join("new").exists());
         assert_eq!(fs::read(&first).unwrap(), b"OLD_PRIVATE");
@@ -559,7 +929,7 @@ fn files_dashboard_edits_only_mappings_and_restores_terminal() {
     pty.send(b"\r");
     pty.wait_text("Destination");
     pty.send(b"\t\t\x1b[200~ changed\x1b[201~\x13");
-    pty.wait_text("psst --write-files");
+    pty.wait_text("psst --files-pull");
     let json: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
     assert_eq!(json["./TOKEN"]["value"], "file contents changed");
     assert_eq!(json["./TOKEN"]["type"], "file");
@@ -1773,7 +2143,7 @@ async fn file_authoring_linking_and_browser_deletion_keep_destinations_untouched
     pty.wait_text("Reference selected");
     // A literal destination is not an environment name. Linking is a separate save.
     pty.send(b"\x1b[Z\x1b[Z\x1b[200~./config.local\x1b[201~\x13");
-    pty.wait_text("psst --write-files");
+    pty.wait_text("psst --files-pull");
     let loaded = Config::load(config.clone()).unwrap();
     assert_eq!(
         loaded.entries["./config.local"].value,
@@ -1839,7 +2209,7 @@ async fn files_author_save_materialize_and_environment_compatibility() {
     pty.send(b"\r");
     pty.wait_text("Reference selected");
     pty.send(b"\x1b[Z\x1b[Z\x1b[200~./nested/config.local\x1b[201~\x13");
-    pty.wait_text("psst --write-files");
+    pty.wait_text("psst --files-pull");
     let loaded = Config::load(config.clone()).unwrap();
     assert!(loaded.entries["ENV"].kind == MappingKind::Env);
     assert!(loaded.entries["./nested/config.local"].kind == MappingKind::File);
@@ -1877,7 +2247,7 @@ async fn files_author_save_materialize_and_environment_compatibility() {
     assert!(!caller.join("nested").exists());
 
     for outcome in ["written", "unchanged"] {
-        let output = run(&["--write-files"]);
+        let output = run(&["--files-pull"]);
         let report = String::from_utf8_lossy(&output.stderr);
         assert!(
             report.contains(&format!("./nested/config.local: {outcome}")),

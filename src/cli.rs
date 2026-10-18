@@ -3,12 +3,14 @@ use std::ffi::OsString;
 /// Wrapper options and native argv for the command, which ends option parsing.
 #[derive(Default)]
 pub struct Args {
-    /// Copy this config entry, taking priority over write/help/command modes.
+    /// Copy this config entry, taking priority over export/help/command modes.
     pub copy: Option<OsString>,
     /// Export nonempty resolved values to the caller's .env.
     pub write: bool,
-    /// Explicit managed-file materialization, never inferred from wrapped argv.
-    pub write_files: bool,
+    /// Pull provider contents into managed files, never inferred from wrapped argv.
+    pub files_pull: bool,
+    /// Push local managed-file contents to their configured providers.
+    pub files_push: bool,
     /// Approve replacements, without bypassing destination safety.
     pub yes: bool,
     /// Print help unless copy or write takes priority.
@@ -26,23 +28,37 @@ impl Args {
         let mut result = Self::default();
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
+            if result.files_pull || result.files_push {
+                match arg.to_str() {
+                    Some("--yes") => result.yes = true,
+                    Some("--help" | "-h") => result.help = true,
+                    _ => bail!(
+                        "{}",
+                        if result.files_push {
+                            PUSH_USAGE
+                        } else {
+                            PULL_USAGE
+                        }
+                    ),
+                }
+                continue;
+            }
             match arg.to_str() {
                 Some("--") => {
                     result.command.extend(args);
                     break;
                 }
-                Some("--write-files")
-                    if result.command.is_empty() && !result.write && result.copy.is_none() =>
-                {
-                    result.write_files = true;
-                    for option in args {
-                        match option.to_str() {
-                            Some("--yes") => result.yes = true,
-                            Some("--help" | "-h") => result.help = true,
-                            _ => bail!("Usage: psst --write-files [--yes]"),
-                        }
+                Some("--files-pull") => {
+                    if result.write || result.copy.is_some() {
+                        bail!("{PULL_USAGE}");
                     }
-                    break;
+                    result.files_pull = true;
+                }
+                Some("--files-push") => {
+                    if result.write || result.copy.is_some() {
+                        bail!("{PUSH_USAGE}");
+                    }
+                    result.files_push = true;
                 }
                 Some("--copy") => {
                     result.copy = Some(
@@ -74,17 +90,22 @@ impl Args {
         Ok(result)
     }
 }
+const PUSH_USAGE: &str = "Usage: psst --files-push [--yes] (local → provider). Push cannot be combined with pull, copy, environment export, or a wrapped command.";
+const PULL_USAGE: &str = "Usage: psst --files-pull [--yes] (provider → local). Pull cannot be combined with other operations or a wrapped command.";
+
 /// Noninteractive usage text, printed without loading configuration.
 pub const HELP: &str = "psst — secrets, quietly
 
 Usage: psst [--copy NAME | --write] [--] [COMMAND [ARGS...]]
-       psst --write-files [--yes]
+       psst --files-pull [--yes]
+       psst --files-push [--yes]
 
   psst                      Open the TUI
   psst command args...      Fetch environment entries in parallel and run command
   psst --copy NAME          Copy one secret (literal bytes, no newline)
   psst --write              Atomically overwrite .env in current directory
-  psst --write-files [--yes] Materialize all managed files with batch replacement consent
+  psst --files-pull [--yes] Pull all managed files: provider → local, with batch replacement consent
+  psst --files-push [--yes] Push all managed files: local → provider, with batch overwrite consent
   psst -h, --help           Show this help
   psst -V, --version        Show version
 ";
@@ -94,7 +115,9 @@ mod tests {
     #[test]
     fn help_includes_usage_and_options_only() {
         assert!(HELP.contains("  psst -V, --version        Show version\n"));
-        assert!(HELP.contains("psst --write-files [--yes]"));
+        assert!(HELP.contains("psst --files-pull [--yes]"));
+        assert!(HELP.contains("provider → local"));
+        assert!(!HELP.contains("--write-files"));
         assert!(HELP.contains("Open the TUI"));
         for control in ["Dashboard", "Ctrl+N", "Ctrl+S", "F1", "Legacy untagged"] {
             assert!(!HELP.contains(control));
@@ -105,27 +128,52 @@ mod tests {
         }
     }
     #[test]
-    fn write_files_option() {
-        let args = Args::parse(["--write-files", "--yes"].map(Into::into)).unwrap();
-        assert!(args.write_files && args.yes);
-        assert!(args.command.is_empty());
-        let args = Args::parse(["--write-files", "--help"].map(Into::into)).unwrap();
-        assert!(args.write_files && args.help);
-        assert!(Args::parse(["--write-files", "unexpected"].map(Into::into)).is_err());
-        for argv in [
-            vec!["write-files", "--yes"],
-            vec!["--", "--write-files", "--yes"],
-            vec!["command", "--write-files", "--yes"],
-        ] {
-            let args = Args::parse(argv.iter().map(OsString::from)).unwrap();
-            assert!(!args.write_files && !args.yes);
-            let expected: Vec<_> = argv
-                .into_iter()
-                .filter(|arg| *arg != "--")
-                .map(OsString::from)
-                .collect();
-            assert_eq!(args.command, expected);
+    fn pull_options() {
+        {
+            let flag = "--files-pull";
+            let args = Args::parse([flag, "--yes"].map(Into::into)).unwrap();
+            assert!(args.files_pull && args.yes);
+            assert!(args.command.is_empty());
+            let args = Args::parse([flag, "--help"].map(Into::into)).unwrap();
+            assert!(args.files_pull && args.help);
+            for argv in [
+                vec![flag, "unexpected"],
+                vec![flag, "--", "command"],
+                vec![flag, "--copy", "NAME"],
+                vec!["--copy", "NAME", flag],
+                vec![flag, "--copy=NAME"],
+                vec!["--copy=NAME", flag],
+                vec![flag, "--write"],
+                vec!["--write", flag],
+                vec![flag, "--files-pull"],
+                vec![flag, "--write-files"],
+            ] {
+                assert!(
+                    Args::parse(argv.iter().map(OsString::from)).is_err(),
+                    "{argv:?}"
+                );
+            }
+            for argv in [
+                vec!["write-files", "--yes"],
+                vec!["--", flag, "--yes"],
+                vec!["command", flag, "--yes"],
+            ] {
+                let args = Args::parse(argv.iter().map(OsString::from)).unwrap();
+                assert!(!args.files_pull && !args.yes);
+                let expected: Vec<_> = argv
+                    .into_iter()
+                    .filter(|arg| *arg != "--")
+                    .map(OsString::from)
+                    .collect();
+                assert_eq!(args.command, expected);
+            }
         }
+    }
+    #[test]
+    fn removed_alias_is_not_a_pull_operation() {
+        let args = Args::parse(["--write-files"].map(Into::into)).unwrap();
+        assert!(!args.files_pull);
+        assert_eq!(args.command, vec![OsString::from("--write-files")]);
     }
     #[test]
     fn version_stops_parsing() {

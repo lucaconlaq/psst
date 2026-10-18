@@ -48,8 +48,11 @@ psst env
 # Use secrets in a shell command
 psst sh -c 'echo $A_SECRET'
 
-# Write configured managed files (prompts before replacing files)
-psst --write-files
+# Pull provider contents into managed files (prompts before replacing files)
+psst --files-pull
+
+# Save local edits to supported existing provider targets (one approval)
+psst --files-push
 ```
 
 ## ⚙️ Configuration
@@ -69,7 +72,6 @@ Example config:
 }
 ```
 
-Managed files use `"type": "file"` and a destination path as the key. They are written only with `psst --write-files`, not when running commands.
 
 ## ⚠️ Limitations
 

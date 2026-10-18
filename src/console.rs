@@ -1,14 +1,17 @@
 use std::{fmt, io::IsTerminal};
 
-pub(crate) fn info(message: fmt::Arguments<'_>) {
+/// Print a successful or informational diagnostic in green when supported.
+pub fn info(message: fmt::Arguments<'_>) {
     print(message, 32);
 }
 
-pub(crate) fn warn(message: fmt::Arguments<'_>) {
+/// Print a warning with a marker and yellow color when supported.
+pub fn warn(message: fmt::Arguments<'_>) {
     print(format_args!("⚠️  {message}"), 33);
 }
 
-pub(crate) fn error(message: fmt::Arguments<'_>) {
+/// Print an error diagnostic in red when supported.
+pub fn error(message: fmt::Arguments<'_>) {
     print(message, 31);
 }
 

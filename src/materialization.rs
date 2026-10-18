@@ -444,7 +444,7 @@ async fn persist_plan<F: std::future::Future<Output = ()>>(
 
 // Nonblocking terminal input avoids a detached blocking stdin reader that
 // would outlive cancellation and prevent runtime shutdown.
-async fn consent() -> Result<bool> {
+pub(crate) async fn consent() -> Result<bool> {
     let mut terminal = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)

@@ -35,6 +35,8 @@ they do not constitute a current full dependency-security audit.
 - `ui`: interactive editing and presentation.
 - `process`: bounded subprocess execution and cancellation cleanup.
 - `operations`: clipboard copying and dotenv export.
+- `push`: bounded, exact-text managed-file snapshots, target grouping, batch
+  approval, encrypted updates, and grouped manual configuration persistence.
 
 ## Module Boundaries / Seams
 
@@ -109,6 +111,45 @@ except for queued 1Password reads and serialized local-storage agent work.
 Local-storage failures stop wrapped-command launch and `.env` export; other
 providers retain warning/omission behavior. Copy propagates errors. Successful
 empty values are injected, omitted from export, and rejected by copy.
+
+### Managed-file push
+
+Push owns local-file plaintext in zeroizing memory, without pull's disk staging.
+It resolves local-storage references to existing `(ID, public key)` targets before
+coalescing identical inputs or rejecting conflicts, then compares raw decrypted
+values. One operation pins its SSH-agent endpoint; it does not persist plaintext
+or agent results beyond that operation. Manual literals are compared directly.
+
+After batch approval, encrypted targets and eligible `op` items are saved
+independently before one manual configuration save. Each encrypted update reloads latest configuration and
+storage, authenticates the current record, and retains configuration/per-key locks,
+loaded-byte checks, and atomic replacement. Inputs and mappings are revalidated
+before work, after signing with refreshed eligible identities, and at final
+replacement. Latest source values may be overwritten, but removed, retargeted,
+ambiguous, unsafe, or finally conflicting targets fail. This path cannot create
+records and does not reuse creation's stale authoring snapshot. Cancellation
+releases owned work while preserving completed writes; postreplacement failures
+report uncertain durability. TUI authoring remains separate and unchanged.
+
+`providers::op::push` owns strict Secure Note JSON eligibility and canonical
+vault/item/section/field resolution. Its closed schema rejects attachments,
+unknown properties, unsupported fields, and all other categories. In particular,
+Login JSON cannot establish passkey absence. Push groups resolved fields before
+raw comparison, then combines approved fields from a freshly loaded item while
+preserving recognized metadata. Conservative limits are 64 KiB per input field,
+1 MiB per raw/serialized item, and bounded 4 MiB subprocess/list captures.
+Parsed strings, raw captures, and fixed-capacity serialization buffers have
+zeroizing owners; Serde scratch space and compiler/OS copies remain best effort.
+
+The latest configuration lock spans preparation and the item edit. Inputs and
+mappings are revalidated after provider reads and serialization. The edit uses
+stdin through bounded cancellable subprocess work; authentication/read behavior
+outside push is unchanged. Transfer-start evidence lives in the plan, so dropping
+an edit future reports an uncertain remote outcome rather than rollback. A final
+reread is not a conditional write: the remote race remains. The eligibility
+rationale and fixture-only compatibility evidence are recorded in
+[ticket 05](tickets/save-files-to-provider/05-push-safe-op-fields.md); they are not
+live-provider release approval.
 
 ### Interactive local storage
 

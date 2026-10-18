@@ -327,7 +327,7 @@ impl App {
                 self.main();
                 self.status(
                     if self.kind == MappingKind::File {
-                        "File mapping saved. Run psst --write-files separately to write destinations."
+                        "File mapping saved. Run psst --files-pull separately to pull provider contents into destinations."
                     } else {
                         "Saved securely."
                     },

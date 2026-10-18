@@ -9,6 +9,8 @@ pub mod browser;
 pub mod cli;
 /// Ordered configuration discovery, validation and atomic persistence.
 pub mod config;
+/// Terminal-aware CLI diagnostics with consistent colors and opt-outs.
+pub mod console;
 /// Internal managed-file preflight, private staging, and conflict snapshots.
 pub mod materialization;
 /// Literal clipboard transfer and dotenv export.
@@ -17,5 +19,7 @@ pub mod operations;
 pub mod process;
 /// Provider registry, parallel resolution and compatible OTP generation.
 pub mod providers;
+/// Memory-only, consent-gated managed-file push.
+pub mod push;
 /// Interactive secret manager with explicit, expiring previews.
 pub mod ui;

@@ -30,7 +30,10 @@ use crate::browser::{BrowserLevel, Choice, Level, Target};
 pub use agent::Agent;
 pub use storage::StoredKey;
 
+pub(crate) use push::PushTarget;
+
 mod agent;
+mod push;
 mod storage;
 
 pub(super) struct LocalStorage;

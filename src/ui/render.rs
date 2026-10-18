@@ -65,7 +65,7 @@ fn help_lines(width: usize) -> Vec<Line<'static>> {
                 ("Left/Right", "Choose source or move text cursor"),
                 (
                     "Ctrl+S",
-                    "Save mapping only; files need psst --write-files separately",
+                    "Save mapping only; pull files with psst --files-pull separately",
                 ),
                 ("", "File deletion keeps destination and provider contents."),
                 ("Esc", "Discard changes"),
@@ -137,8 +137,8 @@ fn help_lines(width: usize) -> Vec<Line<'static>> {
                     "Export environment entries only to private .env",
                 ),
                 (
-                    "psst --write-files [--yes]",
-                    "Explicitly materialize all file mappings",
+                    "psst --files-pull [--yes]",
+                    "Pull all managed files: provider → local",
                 ),
                 (
                     "",

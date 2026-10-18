@@ -76,6 +76,44 @@ impl StoredKey {
         Ok(validated)
     }
 
+    // Push reloads latest state rather than reusing an authoring snapshot, but
+    // still requires an existing authenticated record and a final race check.
+    pub(super) async fn replace_checked(
+        &mut self,
+        agent: &Agent,
+        id: &str,
+        value: &str,
+        mut validate: impl FnMut(&[PublicKey]) -> Result<()>,
+        mut boundary: impl FnMut(WriteBoundary) -> Result<()>,
+    ) -> Result<()> {
+        validate_value(value)?;
+        let current = self
+            .file
+            .records
+            .iter()
+            .find(|record| record.id == id)
+            .context("Push requires an existing local-storage record")?;
+        // Authentication errors in the latest value must not be overwritten.
+        let _current = current.decrypt(agent, &self.key, id).await?;
+        let _lock = self.lock()?;
+        let record = Envelope::encrypt(agent, &self.key, id, value).await?;
+        let keys = agent.identities().await?;
+        validate(&keys)?;
+        let mut next = self.file.clone();
+        *next
+            .records
+            .iter_mut()
+            .find(|record| record.id == id)
+            .context("Push target disappeared")? = record;
+        self.commit(next, |stage| {
+            boundary(stage)?;
+            if stage == WriteBoundary::Replace {
+                validate(&keys)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Remove only the selected ID; retain the per-key file even when empty.
     /// Missing IDs/files are a no-op. Mapping deletion must save configuration
     /// first; independent browser deletion keeps mappings.
@@ -146,7 +184,7 @@ impl StoredKey {
     fn commit(
         &mut self,
         next: KeyFile,
-        boundary: impl FnMut(WriteBoundary) -> Result<()>,
+        mut boundary: impl FnMut(WriteBoundary) -> Result<()>,
     ) -> Result<()> {
         let bytes = next.encode(&self.key)?;
         // Recheck after signing: uncooperative changes must not be overwritten.
@@ -154,7 +192,16 @@ impl StoredKey {
             read(&self.path)? == self.baseline,
             "Local-storage changed on disk; reload before saving"
         );
-        let result = atomic_write_checked(&self.path, &bytes, boundary);
+        let result = atomic_write_checked(&self.path, &bytes, |stage| {
+            boundary(stage)?;
+            if stage == WriteBoundary::Replace {
+                ensure!(
+                    read(&self.path)? == self.baseline,
+                    "Local-storage changed before replacement"
+                );
+            }
+            Ok(())
+        });
         if result.as_ref().err().is_none_or(|error| error.changed) {
             self.baseline = Some(bytes);
             self.file = next;
@@ -717,6 +764,42 @@ mod tests {
             File::create(storage.join(format!("ignored-{index}.lock"))).unwrap();
         }
         assert!(list(&root).unwrap_err().to_string().contains("Too many"));
+    }
+
+    #[test]
+    fn final_loaded_content_check_rejects_mutations_during_temporary_writing() {
+        let (key, file) = fixture();
+        for mutation in [
+            WriteBoundary::Write,
+            WriteBoundary::FileSync,
+            WriteBoundary::Replace,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            let path = store(&root, &key, file.clone());
+            let mut stored = StoredKey::load(&root, key.clone()).unwrap();
+            let _lock = stored.lock().unwrap();
+            let mut changed = fs::read(&path).unwrap();
+            changed.push(b' ');
+            let error = stored
+                .commit(KeyFile::new(&key), |stage| {
+                    if stage == mutation {
+                        fs::write(&path, &changed)?;
+                    }
+                    Ok(())
+                })
+                .unwrap_err();
+            assert!(!error.downcast_ref::<PersistenceError>().unwrap().changed);
+            assert_eq!(fs::read(&path).unwrap(), changed);
+            assert_eq!(stored.records().len(), 1);
+            assert!(fs::read_dir(root.join(".psst")).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".psst-write-")
+            }));
+        }
     }
 
     #[test]

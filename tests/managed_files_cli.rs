@@ -14,13 +14,17 @@ use serde_json::json;
 mod support;
 
 fn command(root: &Path) -> Command {
+    pull_command(root, "--files-pull")
+}
+
+fn pull_command(root: &Path, flag: &str) -> Command {
     let mut command = Command::new(assert_cmd::cargo::cargo_bin!("psst"));
     command
         .current_dir(root)
         .env("PSST_CONFIG", root.join("custom.json"))
         .env("TMPDIR", root)
         .env_remove("SSH_AUTH_SOCK")
-        .args(["--write-files"])
+        .arg(flag)
         .timeout(Duration::from_secs(10));
     command
 }
@@ -520,7 +524,7 @@ fn restrictive_umask_still_creates_exact_private_parents() {
     // process where other tests run concurrently.
     let mut child = std::process::Command::new("sh");
     child
-        .args(["-c", "umask 0200; exec \"$1\" --write-files", "sh"])
+        .args(["-c", "umask 0200; exec \"$1\" --files-pull", "sh"])
         .arg(assert_cmd::cargo::cargo_bin!("psst"))
         .current_dir(root.path())
         .env("PSST_CONFIG", root.path().join("custom.json"))
@@ -675,7 +679,7 @@ fn empty_new_and_no_change_runs_need_no_prompt_and_help_exposes_command() {
         .get_output()
         .clone();
     let help = String::from_utf8_lossy(&output.stdout);
-    for guidance in ["--write-files [--yes]", "Open the TUI"] {
+    for guidance in ["--files-pull [--yes]", "provider → local", "Open the TUI"] {
         assert!(help.contains(guidance), "missing help: {guidance}");
     }
     command(root).arg("--dry-run").assert().failure();

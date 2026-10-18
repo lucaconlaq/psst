@@ -7,6 +7,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
+use zeroize::{Zeroize, Zeroizing};
 
 /// The purpose of a configuration mapping; legacy mappings are entries.
 #[derive(Clone, Copy, Default, Serialize, PartialEq, Eq)]
@@ -147,6 +148,17 @@ pub struct Config {
     baseline: Option<Vec<u8>>,
 }
 impl Config {
+    // Push owns newly copied local plaintext in this configuration until save
+    // finishes. Its private guard calls this on every exit, including errors.
+    pub(crate) fn clear_plaintext(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.value.zeroize();
+        }
+        if let Some(bytes) = &mut self.baseline {
+            bytes.zeroize();
+        }
+    }
+
     /// Load up to 4 MiB, rejecting invalid schema, keys, duplicates and NUL.
     /// Missing and zero-byte files are treated as empty without creating a file.
     pub fn load(path: PathBuf) -> Result<Self> {
@@ -210,18 +222,74 @@ impl Config {
         if read_optional(&self.path)? != self.baseline {
             bail!("Config changed on disk. Reopen psst before saving.");
         }
-        let bytes = serde_json::to_vec_pretty(&entries)?;
-        if bytes.len() > 4 * 1024 * 1024 {
-            bail!("Config exceeds 4 MiB");
-        }
+        let bytes = encode_entries(&entries)?;
         let result = atomic_write_checked(&self.path, &bytes, boundary);
         if result.as_ref().err().is_none_or(|error| error.changed) {
-            self.baseline = Some(bytes);
+            self.baseline = Some(bytes.to_vec());
             self.entries = entries;
         }
         result.map_err(anyhow::Error::new)
     }
+
+    // Push reloads under this lock, then retains it until persistence finishes.
+    pub(crate) fn reload_locked(&self) -> Result<(Self, FileLock)> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.lock_path())?;
+        if !file.metadata()?.is_file() {
+            bail!("Config lock is not a regular file");
+        }
+        let lock = FileLock::try_exclusive(file)
+            .context("Config is being saved by another psst process")?;
+        Ok((Self::load(self.path.clone())?, lock))
+    }
+
+    // Caller owns reload_locked's guard; no second lock acquisition or clone
+    // of planned literals. The loaded-content check still catches final races.
+    pub(crate) fn save_current_locked(
+        &self,
+        mut boundary: impl FnMut(WriteBoundary) -> Result<()>,
+    ) -> Result<()> {
+        let bytes = encode_entries(&self.entries)?;
+        atomic_write_checked(&self.path, &bytes, |stage| {
+            boundary(stage)?;
+            if stage == WriteBoundary::Replace && read_optional(&self.path)? != self.baseline {
+                bail!("Config changed on disk before replacement");
+            }
+            Ok(())
+        })
+        .map_err(anyhow::Error::new)
+    }
 }
+
+// Allocate once at the persisted bound; serialization cannot leave freed,
+// unwiped growth buffers or build an arbitrarily oversized JSON document.
+fn encode_entries(entries: &Entries) -> Result<Zeroizing<Vec<u8>>> {
+    struct Bounded(Zeroizing<Vec<u8>>);
+    impl Write for Bounded {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > 4 * 1024 * 1024 - self.0.len() {
+                return Err(std::io::Error::other("Config exceeds 4 MiB"));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Bounded(Zeroizing::new(Vec::with_capacity(4 * 1024 * 1024)));
+    serde_json::to_writer_pretty(&mut writer, entries)
+        .map_err(|_| anyhow::anyhow!("Cannot serialize config within 4 MiB"))?;
+    Ok(writer.0)
+}
+
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     match fs::File::open(path) {
         Ok(file) => {

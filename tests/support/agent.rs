@@ -1,5 +1,5 @@
-//! Deterministic private fixture; never reads SSH_AUTH_SOCK or private-key
-//! files.
+// Deterministic private fixture; never reads SSH_AUTH_SOCK or private-key
+// files. Also included by push unit tests for internal persistence injection.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -46,6 +46,7 @@ pub struct State {
     pub gate: Semaphore,
     pub requested: Notify,
     pub delay: AtomicUsize,
+    pub delay_after: AtomicUsize,
     pub identities: std::sync::Mutex<Vec<Vec<u8>>>,
     pub listing_gate: Semaphore,
     pub listing_requested: Notify,
@@ -86,6 +87,7 @@ impl FakeAgent {
             gate: Semaphore::new(0),
             requested: Notify::new(),
             delay: AtomicUsize::new(0),
+            delay_after: AtomicUsize::new(0),
             listing_gate: Semaphore::new(0),
             listing_requested: Notify::new(),
             delay_listing: AtomicUsize::new(0),
@@ -270,7 +272,9 @@ async fn serve(
                     .unwrap();
                 let challenge = take_string(&mut fields);
                 assert_eq!(fields, [0; 4]);
-                if state.delay.load(Ordering::SeqCst) != 0 {
+                if state.delay.load(Ordering::SeqCst) != 0
+                    && state.signs.load(Ordering::SeqCst) > state.delay_after.load(Ordering::SeqCst)
+                {
                     let mut byte = [0];
                     tokio::select! {
                         permit = state.gate.acquire() => { permit.unwrap().forget(); }

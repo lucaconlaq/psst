@@ -14,6 +14,8 @@ use std::{
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
+pub(crate) mod push;
+
 // Share one queue across op and op 2FA so reads cannot race authentication.
 static READ_GATE: Mutex<()> = Mutex::const_new(());
 

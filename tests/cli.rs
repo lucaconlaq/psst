@@ -503,7 +503,8 @@ fn cancellation_kills_active_op_read_without_starting_queued_reads() {
         "FIRST": {"source":"op", "value":"op://v/first/field"},
         "QUEUED": {"source":"op 2FA", "value":"op://v/queued/seed"}
     }));
-    f.script("op", "case \"$2\" in\n op://v/first/field) printf '%s' $$ > fetching; sleep 20;;\n *) touch queued-started; exit 9;; esac");
+    // Publish readiness only after the complete PID has been written.
+    f.script("op", "case \"$2\" in\n op://v/first/field) printf '%s' $$ > fetching.tmp; mv fetching.tmp fetching; sleep 20;;\n *) touch queued-started; exit 9;; esac");
     let mut child = StdCommand::new(binary())
         .env_remove("SSH_AUTH_SOCK")
         .current_dir(f.temp.path())

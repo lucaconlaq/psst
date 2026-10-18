@@ -176,7 +176,7 @@ fn file_mapping_crud_is_configuration_only_and_rejects_cross_kind_collisions() {
         e.value = Zeroizing::new("record#SHA256:test".into());
     }
     app.save();
-    assert!(app.status.contains("psst --write-files"));
+    assert!(app.status.contains("psst --files-pull"));
     key(&mut app, KeyCode::Enter);
     if let View::Editor(e) = &mut app.view {
         e.name = "renamed".into();
@@ -1365,7 +1365,7 @@ fn help_scrolls_with_arrows_and_keeps_shortcuts_visible() {
         }
         for guidance in [
             "Ctrl+C quits from any view.",
-            "--write-files",
+            "--files-pull",
             "0600;",
             "repair.",
             "psst-files-*",

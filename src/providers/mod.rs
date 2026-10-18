@@ -14,7 +14,7 @@ pub use op::totp;
 /// resolution.
 pub mod local_storage;
 mod manual;
-mod op;
+pub(crate) mod op;
 mod shell;
 mod terraform;
 mod vault;
