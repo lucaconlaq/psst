@@ -139,7 +139,11 @@ vault/item/section/field resolution. Its closed schema rejects attachments,
 unknown properties, unsupported fields, and all other categories. In particular,
 Login JSON cannot establish passkey absence. Push groups resolved fields before
 raw comparison, then combines approved fields from a freshly loaded item while
-preserving recognized metadata. Conservative limits are 64 KiB per input field,
+preserving recognized metadata. Optional string `additional_information` is
+round-tripped as a CLI-generated display summary; the CLI regenerates it when
+note contents change. An existing eligible field with an omitted `value` is
+empty; explicit null and missing field identities remain invalid.
+Conservative limits are 64 KiB per input field,
 1 MiB per raw/serialized item, and bounded 4 MiB subprocess/list captures.
 Parsed strings, raw captures, and fixed-capacity serialization buffers have
 zeroizing owners; Serde scratch space and compiler/OS copies remain best effort.
@@ -149,10 +153,10 @@ mappings are revalidated after provider reads and serialization. The edit uses
 stdin through bounded cancellable subprocess work; authentication/read behavior
 outside push is unchanged. Transfer-start evidence lives in the plan, so dropping
 an edit future reports an uncertain remote outcome rather than rollback. A final
-reread is not a conditional write: the remote race remains. The eligibility
-rationale and fixture-only compatibility evidence are recorded in
-[ticket 05](tickets/save-files-to-provider/05-push-safe-op-fields.md); they are not
-live-provider release approval.
+reread is not a conditional write: the remote race remains. The closed Secure
+Note schema does not establish eligibility for other categories. Scoped
+[macOS live verification](specs/03-save-files-to-provider.md#macos-verification-evidence-2026-10-19)
+records CLI compatibility and outstanding checks, not blanket release approval.
 
 ### Interactive local storage
 
