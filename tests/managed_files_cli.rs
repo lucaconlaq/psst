@@ -23,6 +23,7 @@ fn pull_command(root: &Path, flag: &str) -> Command {
         .current_dir(root)
         .env("PSST_CONFIG", root.join("custom.json"))
         .env("TMPDIR", root)
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .arg(flag)
         .timeout(Duration::from_secs(10));
@@ -87,6 +88,7 @@ async fn fake_agent_failures_are_best_effort_only_for_materialization() {
                 .current_dir(root)
                 .env("PSST_CONFIG", root.join("custom.json"))
                 .env("TMPDIR", root)
+                .env_remove("PSST_SSH_AUTH_SOCK")
                 .env("SSH_AUTH_SOCK", agent.socket())
                 .args(args)
                 .timeout(Duration::from_secs(10))

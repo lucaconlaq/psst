@@ -66,6 +66,7 @@ async fn deletion_selection_and_snapshot_safety() {
             );
         }
         let mut child = Command::new(std::env::current_exe().unwrap())
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env_remove("SSH_AUTH_SOCK")
             .env("SSH_AUTH_SOCK", fake.socket())
             .env("PSST_TIMEOUT", "2")

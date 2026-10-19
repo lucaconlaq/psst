@@ -76,6 +76,7 @@ async fn readers_see_whole_documents_during_repeated_replacement() {
 fn save_deadline_runs_with_isolated_timeout_environment() {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "save_deadline_worker", "--nocapture"])
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .env("PSST_TIMEOUT", "1")
         .env("PSST_TEST_STORAGE_DEADLINE", "1")

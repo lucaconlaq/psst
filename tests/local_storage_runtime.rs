@@ -58,6 +58,7 @@ fn command(config: &Path, cwd: &Path, agent: Option<&FakeAgent>) -> Command {
     let mut command = Command::new(assert_cmd::cargo::cargo_bin!("psst"));
     command
         .current_dir(cwd)
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .env("PSST_CONFIG", config)
         .env("PSST_TIMEOUT", "1")
@@ -463,7 +464,8 @@ async fn deadlines_active_and_queued_cancellation_do_not_retry_and_next_operatio
 #[tokio::test]
 async fn isolated_operation_cancellation_and_error_order() {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
-    cmd.env_remove("SSH_AUTH_SOCK")
+    cmd.env_remove("PSST_SSH_AUTH_SOCK")
+        .env_remove("SSH_AUTH_SOCK")
         .env("PSST_OPERATION_WORKER", "1")
         .args(["--exact", "operation_worker", "--test-threads=1"]);
     let result = output(cmd).await;

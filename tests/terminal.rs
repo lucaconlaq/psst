@@ -1514,6 +1514,7 @@ async fn encrypted_create_save_resolve_exact_text_and_nul_rejection() {
             fs::read_to_string(dir.path().join(".psst").join(fake.key.filename())).unwrap();
         assert!(!ciphertext.contains("PASTED_SECRET"));
         let output = Command::new(assert_cmd::cargo::cargo_bin!("psst"))
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env_remove("SSH_AUTH_SOCK")
             .env("SSH_AUTH_SOCK", fake.socket())
             .env("PSST_CONFIG", &config)
@@ -1706,6 +1707,7 @@ async fn encrypted_create_save_resolve_with_nonexistent_config_parents() {
         );
     }
     let output = Command::new(assert_cmd::cargo::cargo_bin!("psst"))
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .env("SSH_AUTH_SOCK", fake.socket())
         .env("PSST_CONFIG", &config)
@@ -2093,6 +2095,7 @@ async fn encrypted_browser_link_and_shared_update_preserve_ciphertext_and_other_
     assert_eq!(after.records().len(), 2);
     assert_eq!(fs::read(&other_file).unwrap(), other_before);
     let result = Command::new(assert_cmd::cargo::cargo_bin!("psst"))
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .env("SSH_AUTH_SOCK", fake.socket())
         .env("PSST_CONFIG", &path)
@@ -2231,6 +2234,7 @@ async fn files_author_save_materialize_and_environment_compatibility() {
         command
             .current_dir(&caller)
             .env("PSST_CONFIG", &config)
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env("SSH_AUTH_SOCK", fake.socket())
             .env("PSST_TIMEOUT", "5")
             .env("TMPDIR", dir.path())

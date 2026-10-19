@@ -22,10 +22,17 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Select only SSH_AUTH_SOCK; an absent/empty value is an error.
+    /// Prefer PSST_SSH_AUTH_SOCK when set, otherwise use SSH_AUTH_SOCK.
+    /// An empty selected value is an error, never a request to fall back.
     pub fn from_env() -> Result<Self> {
-        let path = std::env::var_os("SSH_AUTH_SOCK").context("SSH_AUTH_SOCK is not set")?;
-        ensure!(!path.is_empty(), "SSH_AUTH_SOCK is empty");
+        let (name, path) = match std::env::var_os("PSST_SSH_AUTH_SOCK") {
+            Some(path) => ("PSST_SSH_AUTH_SOCK", path),
+            None => (
+                "SSH_AUTH_SOCK",
+                std::env::var_os("SSH_AUTH_SOCK").context("SSH_AUTH_SOCK is not set")?,
+            ),
+        };
+        ensure!(!path.is_empty(), "{name} is empty");
         Ok(Self::at(PathBuf::from(path)))
     }
 

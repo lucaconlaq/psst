@@ -79,8 +79,11 @@ operations. This context is internal, not an added provider trait contract.
 
 ### SSH-agent boundary
 
-Only Unix `SSH_AUTH_SOCK` selects the runtime endpoint; tests explicitly construct
-`Agent::at(fake_socket)`. psst does not read private keys, invoke `op` for local
+Unix `PSST_SSH_AUTH_SOCK` selects the runtime endpoint when set; otherwise
+`SSH_AUTH_SOCK` is used. An empty selected value or missing fallback is an error.
+Connection/agent failures do not fall back to another endpoint. Tests explicitly
+construct `Agent::at(fake_socket)` or isolate both environment variables.
+psst does not read SSH's `IdentityAgent` or private keys, invoke `op` for local
 storage, detect vendors or forwarding, discover/start agents, or retry/fall back.
 
 The standard protocol uses identity request/answer `11/12` and sign request/answer
@@ -358,8 +361,8 @@ shell commands, and manual values. External CLIs inherit authentication; psst
 does not cache authentication tokens.
 
 Local-storage targets deterministic Ed25519 SSH-agent signing through Unix
-`SSH_AUTH_SOCK`, including 1Password SSH Key items, without reading private keys
-or invoking SSH/encryption executables. Compatible agents are allowed without
+`PSST_SSH_AUTH_SOCK` or `SSH_AUTH_SOCK`, including 1Password SSH Key items,
+without reading private keys or invoking SSH/encryption executables. Compatible agents are allowed without
 vendor checks; a vendor-looking socket alone is not proof of custody. Consented
 macOS ARM64 1Password functional checks passed with process/socket ownership and
 code-signature identification. Authorization settings remain undocumented, and

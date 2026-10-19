@@ -17,6 +17,7 @@ async fn author_save_deadline_includes_queued_work_without_retry() {
     let dir = tempfile::tempdir_in(root).unwrap();
     fake.delay();
     let mut child = Command::new(std::env::current_exe().unwrap())
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .env("SSH_AUTH_SOCK", fake.socket())
         .env("PSST_TIMEOUT", "1")
@@ -80,6 +81,7 @@ async fn author_rechecks_records_added_during_signing() {
         }
         fake.delay();
         let mut child = Command::new(std::env::current_exe().unwrap())
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env_remove("SSH_AUTH_SOCK")
             .env("SSH_AUTH_SOCK", fake.socket())
             .env("PSST_TIMEOUT", "10")
@@ -201,6 +203,7 @@ async fn author_post_sign_listing_failure_deadline_and_cancellation() {
         let dir = tempfile::tempdir_in(root).unwrap();
         fake.delay();
         let mut child = Command::new(std::env::current_exe().unwrap())
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env_remove("SSH_AUTH_SOCK")
             .env("SSH_AUTH_SOCK", fake.socket())
             .env("PSST_TIMEOUT", "2")
@@ -324,6 +327,7 @@ async fn author_updates_preserve_ciphertext_on_failure() {
             _ => {}
         }
         let mut child = Command::new(std::env::current_exe().unwrap())
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env_remove("SSH_AUTH_SOCK")
             .env("SSH_AUTH_SOCK", fake.socket())
             .env("PSST_TIMEOUT", "1")

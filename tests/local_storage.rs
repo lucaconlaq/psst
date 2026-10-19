@@ -470,6 +470,7 @@ async fn cancellation_releases_active_and_queued_work() {
 #[test]
 fn deadlines_include_queue_time() {
     let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .env("PSST_TIMEOUT", "1")
         .env("PSST_TEST_DEADLINE_WORKER", "1")
@@ -495,6 +496,7 @@ fn timeout_environment_semantics() {
     ] {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env_remove("SSH_AUTH_SOCK")
             .env_remove("PSST_TIMEOUT")
             .env("PSST_TEST_EXPECT_TIMEOUT", expected.to_string())

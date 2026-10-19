@@ -20,6 +20,7 @@ fn command(root: &Path) -> Command {
         .current_dir(root)
         .env("PSST_CONFIG", root.join("custom.json"))
         .env("TMPDIR", root)
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env_remove("SSH_AUTH_SOCK")
         .timeout(Duration::from_secs(10));
     command

@@ -260,6 +260,7 @@ async fn timeout_kills_descendants() {
             ])
             .env("PSST_PROCESS_TIMEOUT_CASE", "1")
             .env("PSST_TIMEOUT", "1")
+            .env_remove("PSST_SSH_AUTH_SOCK")
             .env_remove("SSH_AUTH_SOCK")
             .output()
             .unwrap();

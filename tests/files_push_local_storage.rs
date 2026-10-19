@@ -42,6 +42,7 @@ fn command(root: &Path, fake: &FakeAgent) -> Command {
     command
         .current_dir(root)
         .env("PSST_CONFIG", root.join("custom.json"))
+        .env_remove("PSST_SSH_AUTH_SOCK")
         .env("SSH_AUTH_SOCK", fake.socket())
         .env("PSST_TIMEOUT", "2")
         .env("TMPDIR", root)
