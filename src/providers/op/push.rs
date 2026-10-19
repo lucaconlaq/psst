@@ -86,6 +86,9 @@ struct Field {
         skip_serializing_if = "Option::is_none"
     )]
     label: Option<Text>,
+    // op omits value for an existing empty field. Eligibility still requires
+    // a known field identity and STRING/CONCEALED type; explicit null is invalid.
+    #[serde(default)]
     value: Text,
     #[serde(
         default,
@@ -117,6 +120,14 @@ pub(crate) struct Item {
     version: u64,
     vault: Vault,
     category: Text,
+    // CLI-generated display summary. Preserve the latest string in the payload;
+    // op regenerates it when the underlying note changes (verified on 2.30.3).
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    additional_information: Option<Text>,
     #[serde(
         default,
         deserialize_with = "present",

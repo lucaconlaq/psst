@@ -202,6 +202,67 @@ async fn exact_values_aliases_raw_unchanged_and_content_free_single_approval() {
 }
 
 #[tokio::test]
+async fn omitted_empty_field_values_are_unchanged_or_updated_without_creation() {
+    for field_id in ["notesPlain", "secret"] {
+        let root = support::tempdir();
+        let root = root.path();
+        fixture(
+            root,
+            json!({"one":mapping(&format!("op://Vault/Note/{field_id}"))}),
+        );
+        let mut value = item();
+        let field = value["fields"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|field| field["id"] == field_id)
+            .unwrap();
+        field.as_object_mut().unwrap().shift_remove("value");
+        write_json(root, "item.json", &value);
+        fs::write(root.join("one"), "").unwrap();
+        let output = push(root).await;
+        assert!(output.status.success(), "{}", report(&output));
+        assert!(report(&output).contains("one: unchanged"));
+        assert!(!root.join("captured.json").exists());
+        fs::write(root.join("one"), "NEW_PRIVATE").unwrap();
+        let output = push(root).await;
+        assert!(output.status.success(), "{}", report(&output));
+        let captured = captured(root);
+        let fields = captured["fields"].as_array().unwrap();
+        assert_eq!(fields.len(), 3);
+        assert_eq!(
+            fields.iter().find(|field| field["id"] == field_id).unwrap()["value"],
+            "NEW_PRIVATE"
+        );
+        clean(root);
+    }
+}
+
+#[tokio::test]
+async fn optional_cli_summary_round_trips_without_disclosure() {
+    for summary in [None, Some(""), Some(" \nSUMMARY_PRIVATE 🔑\t")] {
+        let root = support::tempdir();
+        let root = root.path();
+        fixture(root, json!({"one":mapping("op://Vault/Note/notesPlain")}));
+        let mut value = item();
+        if let Some(summary) = summary {
+            value["additional_information"] = json!(summary);
+        }
+        write_json(root, "item.json", &value);
+        let output = push(root).await;
+        assert!(output.status.success(), "{}", report(&output));
+        value["fields"][0]["value"] = json!("NEW_PRIVATE");
+        assert_eq!(captured(root), value);
+        assert!(
+            !fs::read_to_string(root.join("argv.log"))
+                .unwrap()
+                .contains("SUMMARY_PRIVATE")
+        );
+        clean(root);
+    }
+}
+
+#[tokio::test]
 async fn normalized_pull_is_not_raw_unchanged_detection_and_empty_pull_still_fails() {
     for raw in [" \nNEW_PRIVATE\t", ""] {
         let root = support::tempdir();
@@ -277,6 +338,7 @@ async fn different_fields_combine_from_latest_item_preserving_all_other_data() {
     latest["favorite"] = json!(false);
     latest["tags"] = json!(["latest"]);
     latest["updated_at"] = json!("2026-01-01T00:00:00Z");
+    latest["additional_information"] = json!("LATEST_SUMMARY_PRIVATE");
     latest["fields"][0]["value"] = json!("LATEST_PRIVATE");
     latest["fields"][2]["value"] = json!("LATEST_UNRELATED_PRIVATE");
     write_json(root, "latest.json", &latest);
@@ -310,6 +372,11 @@ async fn unsafe_unsupported_missing_and_ambiguous_items_fail_closed() {
         value[key] = json!([]);
         exclusions.push(value);
     }
+    for summary in [Value::Null, json!(42), json!([]), json!({})] {
+        let mut value = item();
+        value["additional_information"] = summary;
+        exclusions.push(value);
+    }
     for field_type in ["OTP", "SSHKEY", "FILE", "DATE", "unknown"] {
         let mut value = item();
         value["fields"][1]["type"] = json!(field_type);
@@ -327,12 +394,9 @@ async fn unsafe_unsupported_missing_and_ambiguous_items_fail_closed() {
     let mut wrong_identity = item();
     wrong_identity["id"] = json!(OTHER);
     exclusions.push(wrong_identity);
-    let mut missing_value = item();
-    missing_value["fields"][1]
-        .as_object_mut()
-        .unwrap()
-        .shift_remove("value");
-    exclusions.push(missing_value);
+    let mut null_value = item();
+    null_value["fields"][1]["value"] = Value::Null;
+    exclusions.push(null_value);
     let mut null_metadata = item();
     null_metadata["favorite"] = Value::Null;
     exclusions.push(null_metadata);
@@ -463,7 +527,9 @@ async fn changed_shared_input_rejects_whole_field_but_other_fields_still_save() 
 
 #[tokio::test]
 async fn provider_limits_include_oversized_aliases_unrelated_data_and_serialized_payloads() {
-    for limit in ["field", "alias", "item", "payload", "output", "list"] {
+    for limit in [
+        "field", "alias", "item", "summary", "payload", "output", "list",
+    ] {
         let root = support::tempdir();
         let root = root.path();
         fixture(
@@ -484,6 +550,11 @@ async fn provider_limits_include_oversized_aliases_unrelated_data_and_serialized
                 } else {
                     4_194_305
                 }));
+                write_json(root, "item.json", &value);
+            }
+            "summary" => {
+                let mut value = item();
+                value["additional_information"] = json!("x".repeat(1_048_576));
                 write_json(root, "item.json", &value);
             }
             "payload" => {
